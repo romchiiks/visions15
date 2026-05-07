@@ -3,26 +3,11 @@ import random
 import sys
 from pathlib import Path
 
-import cv2
 import yaml
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import (
-    QApplication,
-    QHBoxLayout,
-    QHeaderView,
-    QLabel,
-    QLineEdit,
-    QMainWindow,
-    QMessageBox,
-    QPushButton,
-    QStackedWidget,
-    QTableWidget,
-    QTableWidgetItem,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QStackedWidget
 
+from screens import AddDetailScreen, DatasetCameraScreen, HomeScreen, ImageScreen, ScanScreen
 from services.camera_service import (
     get_dataset_class_dir,
     open_configured_camera,
@@ -67,11 +52,11 @@ class MainWindow(QMainWindow):
         self.dataset_record_timer.setInterval(1000)
         self.dataset_record_timer.timeout.connect(self.record_dataset_frame)
 
-        self.home_screen = self.create_home_screen()
-        self.scan_screen = self.create_scan_screen()
-        self.image_screen = self.create_image_screen()
-        self.add_detail_screen = self.create_add_detail_screen()
-        self.dataset_camera_screen = self.create_dataset_camera_screen()
+        self.home_screen = HomeScreen(self.buttons_config)
+        self.scan_screen = ScanScreen(self.buttons_config)
+        self.image_screen = ImageScreen(self.buttons_config)
+        self.add_detail_screen = AddDetailScreen(self.buttons_config)
+        self.dataset_camera_screen = DatasetCameraScreen(self.buttons_config)
 
         self.stack.addWidget(self.home_screen)
         self.stack.addWidget(self.scan_screen)
@@ -79,154 +64,24 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.add_detail_screen)
         self.stack.addWidget(self.dataset_camera_screen)
 
-    def create_home_screen(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(32, 32, 32, 32)
-        layout.setSpacing(20)
-        layout.setAlignment(Qt.AlignCenter)
+        self.connect_screen_signals()
 
-        scan_button = self.create_button("scan_button")
-        add_detail_button = self.create_button("add_detail_button")
+    def connect_screen_signals(self):
+        self.home_screen.scan_requested.connect(self.open_scan_screen)
+        self.home_screen.add_detail_requested.connect(self.open_add_detail_screen)
 
-        scan_button.clicked.connect(self.open_scan_screen)
-        add_detail_button.clicked.connect(self.open_add_detail_screen)
+        self.scan_screen.back_requested.connect(self.open_home_screen)
+        self.scan_screen.scan_requested.connect(self.scan_camera_image)
+        self.scan_screen.show_image_requested.connect(self.open_image_screen)
 
-        layout.addWidget(scan_button)
-        layout.addWidget(add_detail_button)
+        self.image_screen.back_requested.connect(self.return_to_scan_screen)
 
-        return page
+        self.add_detail_screen.back_requested.connect(self.open_home_screen)
+        self.add_detail_screen.add_detail_requested.connect(self.add_detail_class)
 
-    def create_scan_screen(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(24, 20, 24, 24)
-        layout.setSpacing(18)
-
-        nav = QHBoxLayout()
-        scan_back_button = self.create_button("scan_back_button")
-        scan_action_button = self.create_button("scan_action_button")
-        show_image_button = self.create_button("show_image_button")
-
-        scan_back_button.clicked.connect(self.open_home_screen)
-        scan_action_button.clicked.connect(self.scan_camera_image)
-        show_image_button.clicked.connect(self.open_image_screen)
-
-        nav.addWidget(scan_back_button)
-        nav.addWidget(scan_action_button)
-        nav.addWidget(show_image_button)
-        nav.addStretch()
-
-        title = QLabel("Результат сканирования")
-        title.setObjectName("title")
-
-        self.scan_results_table = QTableWidget(0, 3)
-        self.scan_results_table.setHorizontalHeaderLabels(["Наименование", "Количество", "Артикул"])
-        self.scan_results_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.scan_results_table.verticalHeader().setVisible(False)
-
-        layout.addLayout(nav)
-        layout.addWidget(title)
-        layout.addWidget(self.scan_results_table)
-
-        return page
-
-    def create_image_screen(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(24, 20, 24, 24)
-        layout.setSpacing(18)
-
-        nav = QHBoxLayout()
-        image_back_button = self.create_button("image_back_button")
-        image_back_button.clicked.connect(self.return_to_scan_screen)
-        nav.addWidget(image_back_button)
-        nav.addStretch()
-
-        self.scanned_image_label = QLabel()
-        self.scanned_image_label.setAlignment(Qt.AlignCenter)
-        self.scanned_image_label.setMinimumHeight(360)
-        self.scanned_image_label.setText("Изображение не найдено")
-
-        layout.addLayout(nav)
-        layout.addWidget(self.scanned_image_label, stretch=1)
-
-        return page
-
-    def create_add_detail_screen(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(24, 20, 24, 24)
-        layout.setSpacing(18)
-
-        nav = QHBoxLayout()
-        add_detail_back_button = self.create_button("add_detail_back_button")
-        add_detail_back_button.clicked.connect(self.open_home_screen)
-        nav.addWidget(add_detail_back_button)
-        nav.addStretch()
-
-        input_row = QHBoxLayout()
-        self.detail_input = QLineEdit()
-        self.detail_input.setPlaceholderText("Введите новый класс детали")
-
-        detail_add_button = self.create_button("detail_add_button")
-        detail_add_button.clicked.connect(self.add_detail_class)
-
-        input_row.addWidget(self.detail_input, stretch=1)
-        input_row.addWidget(detail_add_button)
-
-        self.details_table = QTableWidget(0, 2)
-        self.details_table.setHorizontalHeaderLabels(["Деталь", "Артикул"])
-        self.details_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.details_table.verticalHeader().setVisible(False)
-
-        layout.addLayout(nav)
-        layout.addLayout(input_row)
-        layout.addWidget(self.details_table)
-
-        return page
-
-    def create_dataset_camera_screen(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(24, 20, 24, 24)
-        layout.setSpacing(18)
-
-        nav = QHBoxLayout()
-        dataset_camera_back_button = self.create_button("dataset_camera_back_button")
-        dataset_camera_back_button.clicked.connect(self.return_to_add_detail_screen)
-        nav.addWidget(dataset_camera_back_button)
-        nav.addStretch()
-
-        self.dataset_camera_title = QLabel("Новый класс детали")
-        self.dataset_camera_title.setObjectName("title")
-
-        self.dataset_camera_label = QLabel()
-        self.dataset_camera_label.setAlignment(Qt.AlignCenter)
-        self.dataset_camera_label.setMinimumHeight(320)
-        self.dataset_camera_label.setText("Камера не запущена")
-
-        actions = QHBoxLayout()
-        self.dataset_snapshot_button = self.create_button("dataset_snapshot_button")
-        self.dataset_record_button = self.create_button("dataset_record_button")
-        self.dataset_snapshot_button.clicked.connect(self.take_dataset_snapshot)
-        self.dataset_record_button.clicked.connect(self.toggle_dataset_recording)
-        actions.addWidget(self.dataset_snapshot_button)
-        actions.addWidget(self.dataset_record_button)
-        actions.addStretch()
-
-        layout.addLayout(nav)
-        layout.addWidget(self.dataset_camera_title)
-        layout.addWidget(self.dataset_camera_label, stretch=1)
-        layout.addLayout(actions)
-
-        return page
-
-    def create_button(self, button_variable_name):
-        button_config = self.buttons_config[button_variable_name]
-        button = QPushButton(button_config["button_text"])
-        button.setObjectName(button_variable_name)
-        return button
+        self.dataset_camera_screen.back_requested.connect(self.return_to_add_detail_screen)
+        self.dataset_camera_screen.snapshot_requested.connect(self.take_dataset_snapshot)
+        self.dataset_camera_screen.record_requested.connect(self.toggle_dataset_recording)
 
     def open_home_screen(self):
         self.stop_dataset_camera()
@@ -234,7 +89,7 @@ class MainWindow(QMainWindow):
 
     def open_scan_screen(self):
         self.stop_dataset_camera()
-        self.clear_scan_result()
+        self.scan_screen.clear_scan_result()
         self.stack.setCurrentWidget(self.scan_screen)
 
     def return_to_scan_screen(self):
@@ -255,12 +110,12 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Добавление детали", "Сначала добавьте класс детали")
             return
 
-        self.dataset_camera_title.setText(f"Класс детали: {self.active_dataset_class_name}")
+        self.dataset_camera_screen.set_class_name(self.active_dataset_class_name)
         self.stack.setCurrentWidget(self.dataset_camera_screen)
         self.start_dataset_camera()
 
     def add_detail_class(self):
-        class_name = self.detail_input.text().strip()
+        class_name = self.add_detail_screen.detail_name()
         try:
             class_name = validate_class_name(class_name)
         except ValueError as error:
@@ -274,59 +129,26 @@ class MainWindow(QMainWindow):
 
         get_dataset_class_dir(class_name)
         self.active_dataset_class_name = class_name
-        self.detail_input.clear()
+        self.add_detail_screen.clear_detail_input()
         self.load_details()
         self.open_dataset_camera_screen()
 
     def scan_camera_image(self):
-        self.last_scanned_image_path = save_camera_image(is_scanned=True)
-        self.show_scan_result()
+        try:
+            self.last_scanned_image_path = save_camera_image(is_scanned=True)
+        except (RuntimeError, ValueError) as error:
+            self.last_scanned_image_path = None
+            QMessageBox.warning(self, "Сканирование", str(error))
+            return
+
+        self.scan_screen.show_scan_result()
 
     def open_image_screen(self):
         self.stack.setCurrentWidget(self.image_screen)
-        self.show_last_scanned_image()
-
-    def show_scan_result(self):
-        self.scan_results_table.setRowCount(1)
-        for column in range(3):
-            item = QTableWidgetItem("null")
-            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-            self.scan_results_table.setItem(0, column, item)
-
-    def clear_scan_result(self):
-        self.scan_results_table.setRowCount(0)
-
-    def show_last_scanned_image(self):
-        if self.last_scanned_image_path is None:
-            self.scanned_image_label.setPixmap(QPixmap())
-            self.scanned_image_label.setText("Изображение не найдено")
-            return
-
-        pixmap = QPixmap(str(self.last_scanned_image_path))
-        if pixmap.isNull():
-            self.scanned_image_label.setPixmap(QPixmap())
-            self.scanned_image_label.setText("Изображение не найдено")
-            return
-
-        self.scanned_image_label.setText("")
-        scaled_pixmap = pixmap.scaled(
-            self.scanned_image_label.size(),
-            Qt.KeepAspectRatio,
-            Qt.SmoothTransformation,
-        )
-        self.scanned_image_label.setPixmap(scaled_pixmap)
+        self.image_screen.show_image(self.last_scanned_image_path)
 
     def load_details(self):
-        details = self.read_details()
-
-        self.details_table.setRowCount(len(details))
-        for row, (detail, article) in enumerate(details.items()):
-            detail_item = QTableWidgetItem(detail)
-            article_item = QTableWidgetItem(str(article))
-            detail_item.setFlags(detail_item.flags() & ~Qt.ItemIsEditable)
-            article_item.setFlags(article_item.flags() & ~Qt.ItemIsEditable)
-            self.details_table.setItem(row, 0, detail_item)
-            self.details_table.setItem(row, 1, article_item)
+        self.add_detail_screen.show_details(self.read_details())
 
     def read_details(self):
         if not DETAILS_PATH.exists() or DETAILS_PATH.stat().st_size == 0:
@@ -375,8 +197,7 @@ class MainWindow(QMainWindow):
             self.dataset_camera.release()
             self.dataset_camera = None
             self.dataset_camera_settings = None
-            self.dataset_camera_label.setPixmap(QPixmap())
-            self.dataset_camera_label.setText("Камера не найдена")
+            self.dataset_camera_screen.show_message("Камера не найдена")
             QMessageBox.warning(self, "Камера", f"Не удалось открыть камеру с index device = {device_index}")
             return
 
@@ -387,8 +208,7 @@ class MainWindow(QMainWindow):
         self.dataset_preview_timer.stop()
         self.dataset_record_timer.stop()
         self.dataset_recording = False
-        if hasattr(self, "dataset_record_button"):
-            self.dataset_record_button.setText(self.buttons_config["dataset_record_button"]["button_text"])
+        self.dataset_camera_screen.set_recording(False)
 
         if self.dataset_camera is not None:
             self.dataset_camera.release()
@@ -403,34 +223,11 @@ class MainWindow(QMainWindow):
 
         success, frame = self.dataset_camera.read()
         if not success:
-            self.dataset_camera_label.setPixmap(QPixmap())
-            self.dataset_camera_label.setText("Не удалось получить кадр")
+            self.dataset_camera_screen.show_message("Не удалось получить кадр")
             return
 
         self.dataset_current_frame = frame
-        self.show_dataset_frame(frame)
-
-    def show_dataset_frame(self, frame):
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        height, width, channels = rgb_frame.shape
-        bytes_per_line = channels * width
-        image = QImage(
-            rgb_frame.data,
-            width,
-            height,
-            bytes_per_line,
-            QImage.Format_RGB888,
-        ).copy()
-
-        self.dataset_camera_label.setText("")
-        pixmap = QPixmap.fromImage(image)
-        self.dataset_camera_label.setPixmap(
-            pixmap.scaled(
-                self.dataset_camera_label.size(),
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation,
-            )
-        )
+        self.dataset_camera_screen.show_frame(frame)
 
     def take_dataset_snapshot(self):
         if self.active_dataset_class_name is None:
@@ -452,7 +249,7 @@ class MainWindow(QMainWindow):
             self.dataset_record_timer.stop()
             self.dataset_preview_timer.start()
             self.dataset_recording = False
-            self.dataset_record_button.setText(self.buttons_config["dataset_record_button"]["button_text"])
+            self.dataset_camera_screen.set_recording(False)
             return
 
         if self.dataset_camera is None or self.active_dataset_class_name is None:
@@ -460,7 +257,7 @@ class MainWindow(QMainWindow):
 
         self.dataset_preview_timer.stop()
         self.dataset_recording = True
-        self.dataset_record_button.setText("Остановить запись")
+        self.dataset_camera_screen.set_recording(True)
         self.record_dataset_frame()
         self.dataset_record_timer.start()
 
@@ -475,7 +272,7 @@ class MainWindow(QMainWindow):
             return
 
         self.dataset_current_frame = frame
-        self.show_dataset_frame(frame)
+        self.dataset_camera_screen.show_frame(frame)
         save_frame_image(
             frame,
             class_name=self.active_dataset_class_name,

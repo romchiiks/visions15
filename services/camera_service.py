@@ -17,6 +17,8 @@ DEFAULT_CAMERA_CONFIG = {
     "fps": 1,
     "width": 640,
     "height": 480,
+    "scan_warmup_seconds": 2.0,
+    "scan_max_wait_seconds": 5.0,
 }
 
 
@@ -47,6 +49,14 @@ def _load_camera_config() -> dict:
         "fps": config.get("fps", DEFAULT_CAMERA_CONFIG["fps"]),
         "width": config.get("width", DEFAULT_CAMERA_CONFIG["width"]),
         "height": config.get("height", DEFAULT_CAMERA_CONFIG["height"]),
+        "scan_warmup_seconds": config.get(
+            "scan_warmup_seconds",
+            DEFAULT_CAMERA_CONFIG["scan_warmup_seconds"],
+        ),
+        "scan_max_wait_seconds": config.get(
+            "scan_max_wait_seconds",
+            DEFAULT_CAMERA_CONFIG["scan_max_wait_seconds"],
+        ),
     }
 
 
@@ -57,10 +67,17 @@ def _get_int_setting(settings: dict, key: str) -> int:
         raise ValueError(f"Некорректное значение {key} в camera_config.json") from None
 
 
+def _get_float_setting(settings: dict, key: str) -> float:
+    try:
+        return float(settings[key])
+    except (TypeError, ValueError):
+        raise ValueError(f"Некорректное значение {key} в camera_config.json") from None
+
+
 def get_camera_settings(
     device_index: int | None = None,
     fps: int | None = None,
-) -> dict[str, int]:
+) -> dict[str, int | float]:
     settings = _load_camera_config()
     if device_index is not None:
         settings["device_index"] = device_index
@@ -72,6 +89,8 @@ def get_camera_settings(
         "fps": _get_int_setting(settings, "fps"),
         "width": _get_int_setting(settings, "width"),
         "height": _get_int_setting(settings, "height"),
+        "scan_warmup_seconds": _get_float_setting(settings, "scan_warmup_seconds"),
+        "scan_max_wait_seconds": _get_float_setting(settings, "scan_max_wait_seconds"),
     }
 
     if settings["device_index"] < 0:
@@ -82,14 +101,19 @@ def get_camera_settings(
         raise ValueError("width в camera_config.json должен быть больше 0")
     if settings["height"] <= 0:
         raise ValueError("height в camera_config.json должен быть больше 0")
+    if settings["scan_warmup_seconds"] < 0:
+        raise ValueError("scan_warmup_seconds в camera_config.json должен быть больше или равен 0")
+    if settings["scan_max_wait_seconds"] <= 0:
+        raise ValueError("scan_max_wait_seconds в camera_config.json должен быть больше 0")
 
     return settings
 
 
-def apply_camera_settings(camera, settings: dict[str, int]) -> None:
+def apply_camera_settings(camera, settings: dict[str, int | float]) -> None:
     camera.set(cv2.CAP_PROP_FPS, settings["fps"])
     camera.set(cv2.CAP_PROP_FRAME_WIDTH, settings["width"])
     camera.set(cv2.CAP_PROP_FRAME_HEIGHT, settings["height"])
+    camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
 
 def open_configured_camera(
@@ -124,6 +148,40 @@ def _write_image(image_path: Path, frame) -> None:
     image_path.write_bytes(encoded_image.tobytes())
 
 
+def _is_green_placeholder_frame(frame) -> bool:
+    channel_means = frame.mean(axis=(0, 1))
+    channel_stds = frame.std(axis=(0, 1))
+    blue_mean, green_mean, red_mean = channel_means
+
+    is_solid_color = all(channel_std < 8 for channel_std in channel_stds)
+    is_green_dominant = green_mean > 80 and green_mean > blue_mean * 1.5 and green_mean > red_mean * 1.5
+
+    return bool(is_solid_color and is_green_dominant)
+
+
+def _read_stable_scan_frame(camera, settings: dict[str, int | float]):
+    warmup_seconds = settings["scan_warmup_seconds"]
+    max_wait_seconds = settings["scan_max_wait_seconds"]
+    started_at = monotonic()
+    last_frame = None
+
+    while True:
+        success, frame = camera.read()
+        if not success:
+            raise RuntimeError("Cannot read frame from camera")
+
+        last_frame = frame
+        elapsed = monotonic() - started_at
+        if elapsed >= warmup_seconds and not _is_green_placeholder_frame(frame):
+            return frame
+        if elapsed >= max_wait_seconds:
+            if _is_green_placeholder_frame(last_frame):
+                raise RuntimeError("Камера не успела подготовить изображение: получен зеленый кадр")
+            return last_frame
+
+        sleep(0.05)
+
+
 def save_frame_image(frame, class_name: str, is_scanned: bool = False) -> Path:
     if is_scanned:
         captures_dir = _ensure_dir(SCANNED_DIR)
@@ -151,9 +209,12 @@ def save_camera_image(
         if not camera.isOpened():
             raise RuntimeError(f"Cannot open camera with device index {camera_settings['device_index']}")
 
-        success, frame = camera.read()
-        if not success:
-            raise RuntimeError("Cannot read frame from camera")
+        if is_scanned:
+            frame = _read_stable_scan_frame(camera, camera_settings)
+        else:
+            success, frame = camera.read()
+            if not success:
+                raise RuntimeError("Cannot read frame from camera")
 
         return save_frame_image(frame, class_name=class_name, is_scanned=is_scanned)
     finally:
