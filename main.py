@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from services.camera_service import (
     get_dataset_class_dir,
+    open_configured_camera,
     save_camera_image,
     save_frame_image,
     validate_class_name,
@@ -51,6 +52,7 @@ class MainWindow(QMainWindow):
         self.last_scanned_image_path = None
         self.active_dataset_class_name = None
         self.dataset_camera = None
+        self.dataset_camera_settings = None
         self.dataset_current_frame = None
         self.dataset_recording = False
 
@@ -355,15 +357,27 @@ class MainWindow(QMainWindow):
 
     def start_dataset_camera(self):
         self.stop_dataset_camera()
-        self.dataset_camera = cv2.VideoCapture(0)
-        self.dataset_camera.set(cv2.CAP_PROP_FPS, 1)
+        try:
+            self.dataset_camera, self.dataset_camera_settings = open_configured_camera()
+        except ValueError as error:
+            self.dataset_camera = None
+            self.dataset_camera_settings = None
+            QMessageBox.warning(self, "Камера", str(error))
+            return
+
+        fps = self.dataset_camera_settings["fps"]
+        interval_ms = max(1, int(1000 / fps))
+        self.dataset_preview_timer.setInterval(interval_ms)
+        self.dataset_record_timer.setInterval(interval_ms)
 
         if not self.dataset_camera.isOpened():
+            device_index = self.dataset_camera_settings["device_index"]
             self.dataset_camera.release()
             self.dataset_camera = None
+            self.dataset_camera_settings = None
             self.dataset_camera_label.setPixmap(QPixmap())
             self.dataset_camera_label.setText("Камера не найдена")
-            QMessageBox.warning(self, "Камера", "Не удалось открыть камеру с index device = 0")
+            QMessageBox.warning(self, "Камера", f"Не удалось открыть камеру с index device = {device_index}")
             return
 
         self.refresh_dataset_camera_frame()
@@ -380,6 +394,7 @@ class MainWindow(QMainWindow):
             self.dataset_camera.release()
             self.dataset_camera = None
 
+        self.dataset_camera_settings = None
         self.dataset_current_frame = None
 
     def refresh_dataset_camera_frame(self):

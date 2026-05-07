@@ -13,6 +13,7 @@ CAPTURES_DIR = PROJECT_ROOT / "captures"
 SCANNED_DIR = CAPTURES_DIR / "scanned"
 DATASET_DIR = CAPTURES_DIR / "dataset"
 DEFAULT_CAMERA_CONFIG = {
+    "device_index": 0,
     "fps": 1,
     "width": 640,
     "height": 480,
@@ -29,39 +30,76 @@ def _ensure_dir(target_dir: Path | str) -> Path:
     return target_dir
 
 
-def _load_camera_config() -> dict[str, int]:
-    if CAMERA_CONFIG_PATH.exists():
-        with CAMERA_CONFIG_PATH.open("r", encoding="utf-8") as config_file:
-            config = json.load(config_file)
-    else:
+def _load_camera_config() -> dict:
+    config = {}
+    if CAMERA_CONFIG_PATH.exists() and CAMERA_CONFIG_PATH.stat().st_size > 0:
+        try:
+            with CAMERA_CONFIG_PATH.open("r", encoding="utf-8") as config_file:
+                config = json.load(config_file)
+        except json.JSONDecodeError:
+            config = {}
+
+    if not isinstance(config, dict):
         config = {}
 
     return {
-        "fps": int(config.get("fps", DEFAULT_CAMERA_CONFIG["fps"])),
-        "width": int(config.get("width", DEFAULT_CAMERA_CONFIG["width"])),
-        "height": int(config.get("height", DEFAULT_CAMERA_CONFIG["height"])),
+        "device_index": config.get("device_index", DEFAULT_CAMERA_CONFIG["device_index"]),
+        "fps": config.get("fps", DEFAULT_CAMERA_CONFIG["fps"]),
+        "width": config.get("width", DEFAULT_CAMERA_CONFIG["width"]),
+        "height": config.get("height", DEFAULT_CAMERA_CONFIG["height"]),
     }
 
 
-def _get_camera_settings(fps: int | None = None) -> dict[str, int]:
+def _get_int_setting(settings: dict, key: str) -> int:
+    try:
+        return int(settings[key])
+    except (TypeError, ValueError):
+        raise ValueError(f"Некорректное значение {key} в camera_config.json") from None
+
+
+def get_camera_settings(
+    device_index: int | None = None,
+    fps: int | None = None,
+) -> dict[str, int]:
     settings = _load_camera_config()
+    if device_index is not None:
+        settings["device_index"] = device_index
     if fps is not None:
         settings["fps"] = fps
 
+    settings = {
+        "device_index": _get_int_setting(settings, "device_index"),
+        "fps": _get_int_setting(settings, "fps"),
+        "width": _get_int_setting(settings, "width"),
+        "height": _get_int_setting(settings, "height"),
+    }
+
+    if settings["device_index"] < 0:
+        raise ValueError("device_index в camera_config.json должен быть больше или равен 0")
     if settings["fps"] <= 0:
-        raise ValueError("fps must be greater than 0")
+        raise ValueError("fps в camera_config.json должен быть больше 0")
     if settings["width"] <= 0:
-        raise ValueError("width must be greater than 0")
+        raise ValueError("width в camera_config.json должен быть больше 0")
     if settings["height"] <= 0:
-        raise ValueError("height must be greater than 0")
+        raise ValueError("height в camera_config.json должен быть больше 0")
 
     return settings
 
 
-def _apply_camera_settings(camera, settings: dict[str, int]) -> None:
+def apply_camera_settings(camera, settings: dict[str, int]) -> None:
     camera.set(cv2.CAP_PROP_FPS, settings["fps"])
     camera.set(cv2.CAP_PROP_FRAME_WIDTH, settings["width"])
     camera.set(cv2.CAP_PROP_FRAME_HEIGHT, settings["height"])
+
+
+def open_configured_camera(
+    device_index: int | None = None,
+    fps: int | None = None,
+):
+    settings = get_camera_settings(device_index=device_index, fps=fps)
+    camera = cv2.VideoCapture(settings["device_index"])
+    apply_camera_settings(camera, settings)
+    return camera, settings
 
 
 def validate_class_name(class_name: str) -> str:
@@ -101,20 +139,17 @@ def save_frame_image(frame, class_name: str, is_scanned: bool = False) -> Path:
 
 
 def save_camera_image(
-    device_index: int = 0,
+    device_index: int | None = None,
     fps: int | None = None,
     is_scanned: bool = True,
     dataset_class_name: str | None = None,
 ) -> Path:
     class_name = dataset_class_name if dataset_class_name is not None else "NEW_CLASS"
-    camera_settings = _get_camera_settings(fps)
-
-    camera = cv2.VideoCapture(device_index)
-    _apply_camera_settings(camera, camera_settings)
+    camera, camera_settings = open_configured_camera(device_index=device_index, fps=fps)
 
     try:
         if not camera.isOpened():
-            raise RuntimeError(f"Cannot open camera with device index {device_index}")
+            raise RuntimeError(f"Cannot open camera with device index {camera_settings['device_index']}")
 
         success, frame = camera.read()
         if not success:
@@ -126,17 +161,14 @@ def save_camera_image(
 
 
 def save_camera_image_stream(
-    device_index: int = 0,
+    device_index: int | None = None,
     fps: int | None = None,
     dataset_class_name: str | None = None,
     duration_seconds: float | None = None,
     max_images: int | None = None,
 ) -> list[Path]:
     class_name = dataset_class_name if dataset_class_name is not None else "NEW_CLASS"
-    camera_settings = _get_camera_settings(fps)
-
-    camera = cv2.VideoCapture(device_index)
-    _apply_camera_settings(camera, camera_settings)
+    camera, camera_settings = open_configured_camera(device_index=device_index, fps=fps)
 
     saved_paths: list[Path] = []
     interval_seconds = 1 / camera_settings["fps"]
@@ -144,7 +176,7 @@ def save_camera_image_stream(
 
     try:
         if not camera.isOpened():
-            raise RuntimeError(f"Cannot open camera with device index {device_index}")
+            raise RuntimeError(f"Cannot open camera with device index {camera_settings['device_index']}")
 
         while True:
             if duration_seconds is not None and monotonic() - started_at >= duration_seconds:
