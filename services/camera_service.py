@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from pathlib import Path
 from time import monotonic, sleep
@@ -7,9 +8,15 @@ import cv2
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+CAMERA_CONFIG_PATH = PROJECT_ROOT / "camera_config.json"
 CAPTURES_DIR = PROJECT_ROOT / "captures"
 SCANNED_DIR = CAPTURES_DIR / "scanned"
 DATASET_DIR = CAPTURES_DIR / "dataset"
+DEFAULT_CAMERA_CONFIG = {
+    "fps": 1,
+    "width": 640,
+    "height": 480,
+}
 
 
 def _timestamp() -> str:
@@ -20,6 +27,41 @@ def _ensure_dir(target_dir: Path | str) -> Path:
     target_dir = Path(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     return target_dir
+
+
+def _load_camera_config() -> dict[str, int]:
+    if CAMERA_CONFIG_PATH.exists():
+        with CAMERA_CONFIG_PATH.open("r", encoding="utf-8") as config_file:
+            config = json.load(config_file)
+    else:
+        config = {}
+
+    return {
+        "fps": int(config.get("fps", DEFAULT_CAMERA_CONFIG["fps"])),
+        "width": int(config.get("width", DEFAULT_CAMERA_CONFIG["width"])),
+        "height": int(config.get("height", DEFAULT_CAMERA_CONFIG["height"])),
+    }
+
+
+def _get_camera_settings(fps: int | None = None) -> dict[str, int]:
+    settings = _load_camera_config()
+    if fps is not None:
+        settings["fps"] = fps
+
+    if settings["fps"] <= 0:
+        raise ValueError("fps must be greater than 0")
+    if settings["width"] <= 0:
+        raise ValueError("width must be greater than 0")
+    if settings["height"] <= 0:
+        raise ValueError("height must be greater than 0")
+
+    return settings
+
+
+def _apply_camera_settings(camera, settings: dict[str, int]) -> None:
+    camera.set(cv2.CAP_PROP_FPS, settings["fps"])
+    camera.set(cv2.CAP_PROP_FRAME_WIDTH, settings["width"])
+    camera.set(cv2.CAP_PROP_FRAME_HEIGHT, settings["height"])
 
 
 def validate_class_name(class_name: str) -> str:
@@ -60,14 +102,15 @@ def save_frame_image(frame, class_name: str, is_scanned: bool = False) -> Path:
 
 def save_camera_image(
     device_index: int = 0,
-    fps: int = 1,
+    fps: int | None = None,
     is_scanned: bool = True,
     dataset_class_name: str | None = None,
 ) -> Path:
     class_name = dataset_class_name if dataset_class_name is not None else "NEW_CLASS"
+    camera_settings = _get_camera_settings(fps)
 
     camera = cv2.VideoCapture(device_index)
-    camera.set(cv2.CAP_PROP_FPS, fps)
+    _apply_camera_settings(camera, camera_settings)
 
     try:
         if not camera.isOpened():
@@ -84,17 +127,19 @@ def save_camera_image(
 
 def save_camera_image_stream(
     device_index: int = 0,
-    fps: int = 1,
+    fps: int | None = None,
     dataset_class_name: str | None = None,
     duration_seconds: float | None = None,
     max_images: int | None = None,
 ) -> list[Path]:
     class_name = dataset_class_name if dataset_class_name is not None else "NEW_CLASS"
+    camera_settings = _get_camera_settings(fps)
+
     camera = cv2.VideoCapture(device_index)
-    camera.set(cv2.CAP_PROP_FPS, fps)
+    _apply_camera_settings(camera, camera_settings)
 
     saved_paths: list[Path] = []
-    interval_seconds = 1 / fps
+    interval_seconds = 1 / camera_settings["fps"]
     started_at = monotonic()
 
     try:
