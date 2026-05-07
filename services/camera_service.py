@@ -14,6 +14,7 @@ SCANNED_DIR = CAPTURES_DIR / "scanned"
 DATASET_DIR = CAPTURES_DIR / "dataset"
 DEFAULT_CAMERA_CONFIG = {
     "device_index": 0,
+    "mjpg": False,
     "fps": 1,
     "width": 640,
     "height": 480,
@@ -46,6 +47,7 @@ def _load_camera_config() -> dict:
 
     return {
         "device_index": config.get("device_index", DEFAULT_CAMERA_CONFIG["device_index"]),
+        "mjpg": config.get("mjpg", DEFAULT_CAMERA_CONFIG["mjpg"]),
         "fps": config.get("fps", DEFAULT_CAMERA_CONFIG["fps"]),
         "width": config.get("width", DEFAULT_CAMERA_CONFIG["width"]),
         "height": config.get("height", DEFAULT_CAMERA_CONFIG["height"]),
@@ -74,10 +76,18 @@ def _get_float_setting(settings: dict, key: str) -> float:
         raise ValueError(f"Некорректное значение {key} в camera_config.json") from None
 
 
+def _get_bool_setting(settings: dict, key: str) -> bool:
+    value = settings[key]
+    if not isinstance(value, bool):
+        raise ValueError(f"{key} в camera_config.json должен быть true или false")
+
+    return value
+
+
 def get_camera_settings(
     device_index: int | None = None,
     fps: int | None = None,
-) -> dict[str, int | float]:
+) -> dict[str, bool | int | float]:
     settings = _load_camera_config()
     if device_index is not None:
         settings["device_index"] = device_index
@@ -86,6 +96,7 @@ def get_camera_settings(
 
     settings = {
         "device_index": _get_int_setting(settings, "device_index"),
+        "mjpg": _get_bool_setting(settings, "mjpg"),
         "fps": _get_int_setting(settings, "fps"),
         "width": _get_int_setting(settings, "width"),
         "height": _get_int_setting(settings, "height"),
@@ -109,7 +120,10 @@ def get_camera_settings(
     return settings
 
 
-def apply_camera_settings(camera, settings: dict[str, int | float]) -> None:
+def apply_camera_settings(camera, settings: dict[str, bool | int | float]) -> None:
+    if settings["mjpg"]:
+        camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+
     camera.set(cv2.CAP_PROP_FPS, settings["fps"])
     camera.set(cv2.CAP_PROP_FRAME_WIDTH, settings["width"])
     camera.set(cv2.CAP_PROP_FRAME_HEIGHT, settings["height"])
@@ -159,7 +173,7 @@ def _is_green_placeholder_frame(frame) -> bool:
     return bool(is_solid_color and is_green_dominant)
 
 
-def _read_stable_scan_frame(camera, settings: dict[str, int | float]):
+def _read_stable_scan_frame(camera, settings: dict[str, bool | int | float]):
     warmup_seconds = settings["scan_warmup_seconds"]
     max_wait_seconds = settings["scan_max_wait_seconds"]
     started_at = monotonic()
