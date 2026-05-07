@@ -34,7 +34,7 @@ class DatasetCameraScreen(QWidget):
 
         self.camera_label = QLabel()
         self.camera_label.setAlignment(Qt.AlignCenter)
-        self.camera_label.setFixedSize(PREVIEW_WIDTH, PREVIEW_HEIGHT)
+        self.camera_label.setMinimumHeight(320)
         self.camera_label.setText("Камера не запущена")
 
         actions = QHBoxLayout()
@@ -79,16 +79,25 @@ class DatasetCameraScreen(QWidget):
         ).copy()
 
         self.camera_label.setText("")
-        self.camera_label.setPixmap(QPixmap.fromImage(image))
+        pixmap = QPixmap.fromImage(image)
+        self.camera_label.setPixmap(
+            pixmap.scaled(
+                self.camera_label.size(),
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation,
+            )
+        )
 
     def create_preview_frame(self, frame):
         height, width = frame.shape[:2]
-        interpolation = cv2.INTER_AREA
-        if width < PREVIEW_WIDTH or height < PREVIEW_HEIGHT:
-            interpolation = cv2.INTER_LINEAR
+        scale = min(PREVIEW_WIDTH / width, PREVIEW_HEIGHT / height, 1)
+        if scale == 1:
+            return frame
 
+        preview_width = max(1, int(width * scale))
+        preview_height = max(1, int(height * scale))
         return cv2.resize(
             frame,
-            (PREVIEW_WIDTH, PREVIEW_HEIGHT),
-            interpolation=interpolation,
+            (preview_width, preview_height),
+            interpolation=cv2.INTER_AREA,
         )
