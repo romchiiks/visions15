@@ -327,11 +327,19 @@ class MainWindow(QMainWindow):
             self.details_table.setItem(row, 1, article_item)
 
     def read_details(self):
-        if not DETAILS_PATH.exists():
+        if not DETAILS_PATH.exists() or DETAILS_PATH.stat().st_size == 0:
             return {}
 
         with DETAILS_PATH.open("r", encoding="utf-8") as file:
-            return json.load(file)
+            try:
+                details = json.load(file)
+            except json.JSONDecodeError:
+                return {}
+
+        if not isinstance(details, dict):
+            return {}
+
+        return details
 
     def write_details(self, details):
         with DETAILS_PATH.open("w", encoding="utf-8") as file:
