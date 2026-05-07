@@ -6,6 +6,10 @@ import cv2
 from screens.common import create_button
 
 
+PREVIEW_WIDTH = 1280
+PREVIEW_HEIGHT = 720
+
+
 class DatasetCameraScreen(QWidget):
     back_requested = Signal()
     snapshot_requested = Signal()
@@ -30,7 +34,7 @@ class DatasetCameraScreen(QWidget):
 
         self.camera_label = QLabel()
         self.camera_label.setAlignment(Qt.AlignCenter)
-        self.camera_label.setMinimumHeight(320)
+        self.camera_label.setFixedSize(PREVIEW_WIDTH, PREVIEW_HEIGHT)
         self.camera_label.setText("Камера не запущена")
 
         actions = QHBoxLayout()
@@ -62,7 +66,8 @@ class DatasetCameraScreen(QWidget):
         self.camera_label.setText(text)
 
     def show_frame(self, frame):
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        preview_frame = self.create_preview_frame(frame)
+        rgb_frame = cv2.cvtColor(preview_frame, cv2.COLOR_BGR2RGB)
         height, width, channels = rgb_frame.shape
         bytes_per_line = channels * width
         image = QImage(
@@ -74,11 +79,16 @@ class DatasetCameraScreen(QWidget):
         ).copy()
 
         self.camera_label.setText("")
-        pixmap = QPixmap.fromImage(image)
-        self.camera_label.setPixmap(
-            pixmap.scaled(
-                self.camera_label.size(),
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation,
-            )
+        self.camera_label.setPixmap(QPixmap.fromImage(image))
+
+    def create_preview_frame(self, frame):
+        height, width = frame.shape[:2]
+        interpolation = cv2.INTER_AREA
+        if width < PREVIEW_WIDTH or height < PREVIEW_HEIGHT:
+            interpolation = cv2.INTER_LINEAR
+
+        return cv2.resize(
+            frame,
+            (PREVIEW_WIDTH, PREVIEW_HEIGHT),
+            interpolation=interpolation,
         )
