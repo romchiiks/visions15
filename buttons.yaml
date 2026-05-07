@@ -1,0 +1,43 @@
+scan_button:
+  button_text: "Сканирование"
+  button_file: "main.py"
+
+add_detail_button:
+  button_text: "Добавить деталь"
+  button_file: "main.py"
+
+scan_back_button:
+  button_text: "Назад"
+  button_file: "main.py"
+
+scan_action_button:
+  button_text: "Сканировать"
+  button_file: "main.py"
+
+show_image_button:
+  button_text: "Показать изображение"
+  button_file: "main.py"
+
+image_back_button:
+  button_text: "Назад"
+  button_file: "main.py"
+
+add_detail_back_button:
+  button_text: "Назад"
+  button_file: "main.py"
+
+detail_add_button:
+  button_text: "Добавить"
+  button_file: "main.py"
+
+dataset_camera_back_button:
+  button_text: "Назад"
+  button_file: "main.py"
+
+dataset_snapshot_button:
+  button_text: "Сделать снимок"
+  button_file: "main.py"
+
+dataset_record_button:
+  button_text: "Начать запись"
+  button_file: "main.py"
