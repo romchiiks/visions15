@@ -2,14 +2,26 @@ import json
 import random
 import re
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import yaml
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QStackedWidget
 
-from screens import AddDetailScreen, DatasetCameraScreen, HomeScreen, ImageScreen, ScanScreen, SettingsScreen
+from screens import (
+    AddDetailScreen,
+    DatasetCameraScreen,
+    HomeScreen,
+    ImageScreen,
+    ScanScreen,
+    SettingsCameraScreen,
+    SettingsScreen,
+)
 from services.camera_service import (
+    CAMERA_CONFIG_PATH,
+    DEFAULT_CAMERA_CONFIG,
     get_dataset_class_dir,
     open_configured_camera,
     save_camera_image,
@@ -22,6 +34,7 @@ BASE_DIR = Path(__file__).resolve().parent
 BUTTONS_PATH = BASE_DIR / "buttons.yaml"
 DETAILS_PATH = BASE_DIR / "details.json"
 ENV_PATH = BASE_DIR / ".env"
+SERVER_HEALTH_TIMEOUT_SECONDS = 5
 
 
 def load_buttons_config():
@@ -42,6 +55,8 @@ class MainWindow(QMainWindow):
         self.dataset_camera_settings = None
         self.dataset_current_frame = None
         self.dataset_recording = False
+        self.settings_camera = None
+        self.settings_camera_settings = None
 
         self.stack = QStackedWidget()
         self.setCentralWidget(self.stack)
@@ -54,12 +69,17 @@ class MainWindow(QMainWindow):
         self.dataset_record_timer.setInterval(1000)
         self.dataset_record_timer.timeout.connect(self.record_dataset_frame)
 
+        self.settings_camera_timer = QTimer(self)
+        self.settings_camera_timer.setInterval(1000)
+        self.settings_camera_timer.timeout.connect(self.refresh_settings_camera_frame)
+
         self.home_screen = HomeScreen(self.buttons_config)
         self.scan_screen = ScanScreen(self.buttons_config)
         self.image_screen = ImageScreen(self.buttons_config)
         self.add_detail_screen = AddDetailScreen(self.buttons_config)
         self.dataset_camera_screen = DatasetCameraScreen(self.buttons_config)
         self.settings_screen = SettingsScreen(self.buttons_config)
+        self.settings_camera_screen = SettingsCameraScreen(self.buttons_config)
 
         self.stack.addWidget(self.home_screen)
         self.stack.addWidget(self.scan_screen)
@@ -67,6 +87,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.add_detail_screen)
         self.stack.addWidget(self.dataset_camera_screen)
         self.stack.addWidget(self.settings_screen)
+        self.stack.addWidget(self.settings_camera_screen)
 
         self.connect_screen_signals()
 
@@ -90,13 +111,19 @@ class MainWindow(QMainWindow):
 
         self.settings_screen.back_requested.connect(self.open_home_screen)
         self.settings_screen.save_requested.connect(self.save_settings)
+        self.settings_screen.check_connection_requested.connect(self.check_server_connection)
+        self.settings_screen.camera_output_requested.connect(self.open_settings_camera_screen)
+
+        self.settings_camera_screen.back_requested.connect(self.open_settings_screen)
 
     def open_home_screen(self):
         self.stop_dataset_camera()
+        self.stop_settings_camera()
         self.stack.setCurrentWidget(self.home_screen)
 
     def open_scan_screen(self):
         self.stop_dataset_camera()
+        self.stop_settings_camera()
         self.scan_screen.clear_scan_result()
         self.stack.setCurrentWidget(self.scan_screen)
 
@@ -105,6 +132,7 @@ class MainWindow(QMainWindow):
 
     def open_add_detail_screen(self):
         self.stop_dataset_camera()
+        self.stop_settings_camera()
         self.load_details()
         self.stack.setCurrentWidget(self.add_detail_screen)
 
@@ -124,12 +152,26 @@ class MainWindow(QMainWindow):
 
     def open_settings_screen(self):
         self.stop_dataset_camera()
+        self.stop_settings_camera()
+        self.load_camera_settings()
         self.stack.setCurrentWidget(self.settings_screen)
+
+    def open_settings_camera_screen(self):
+        self.stop_dataset_camera()
+        self.settings_camera_screen.show_message("Камера запускается")
+        self.stack.setCurrentWidget(self.settings_camera_screen)
+        self.start_settings_camera()
 
     def save_settings(self):
         unload_times = self.settings_screen.unload_times()
         if not self.are_unload_times_valid(unload_times):
             QMessageBox.warning(self, "Настройки", "Введите часы выгрузки в формате ЧЧ:ММ")
+            return
+
+        try:
+            camera_settings = self.parse_camera_settings(self.settings_screen.camera_settings())
+        except ValueError as error:
+            QMessageBox.warning(self, "Настройки", str(error))
             return
 
         self.write_env_values(
@@ -139,11 +181,122 @@ class MainWindow(QMainWindow):
                 "UNLOAD_TIME_2": unload_times[1],
             }
         )
+        self.write_camera_config(camera_settings)
         QMessageBox.information(self, "Настройки", "Настройки сохранены")
+
+    def check_server_connection(self):
+        api_hostname = self.read_env_value("API_HOSTNAME")
+        if not api_hostname:
+            QMessageBox.warning(self, "Настройки", "Соединение: ОШИБКА")
+            return
+
+        health_url = self.build_health_url(api_hostname)
+        try:
+            with urllib.request.urlopen(health_url, timeout=SERVER_HEALTH_TIMEOUT_SECONDS) as response:
+                response_data = json.loads(response.read().decode("utf-8"))
+        except (TimeoutError, OSError, urllib.error.URLError, json.JSONDecodeError):
+            QMessageBox.warning(self, "Настройки", "Соединение: ОШИБКА")
+            return
+
+        if response_data.get("status") == "ok":
+            QMessageBox.information(self, "Настройки", "Соединение: ОК")
+            return
+
+        QMessageBox.warning(self, "Настройки", "Соединение: ОШИБКА")
+
+    def build_health_url(self, api_hostname):
+        api_hostname = api_hostname.strip().rstrip("/")
+        if not re.match(r"^https?://", api_hostname):
+            api_hostname = f"http://{api_hostname}"
+
+        return f"{api_hostname}/api/v1/health"
+
+    def read_env_value(self, target_key):
+        if not ENV_PATH.exists() or ENV_PATH.stat().st_size == 0:
+            return None
+
+        for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
+            stripped_line = line.strip()
+            if not stripped_line or stripped_line.startswith("#"):
+                continue
+            if stripped_line.startswith("export "):
+                stripped_line = stripped_line[len("export ") :].lstrip()
+            if "=" not in stripped_line:
+                continue
+
+            key, value = stripped_line.split("=", 1)
+            if key.strip() != target_key:
+                continue
+
+            return self.parse_env_value(value.strip())
+
+        return None
+
+    def parse_env_value(self, value):
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ['"', "'"]:
+            value = value[1:-1]
+
+        return value.replace('\\"', '"').replace("\\\\", "\\")
 
     def are_unload_times_valid(self, unload_times):
         time_pattern = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
         return all(time_pattern.fullmatch(unload_time) for unload_time in unload_times)
+
+    def load_camera_settings(self):
+        camera_config = self.read_camera_config()
+        settings = DEFAULT_CAMERA_CONFIG.copy()
+        settings.update(camera_config)
+        self.settings_screen.set_camera_settings(settings)
+
+    def read_camera_config(self):
+        if not CAMERA_CONFIG_PATH.exists() or CAMERA_CONFIG_PATH.stat().st_size == 0:
+            return {}
+
+        with CAMERA_CONFIG_PATH.open("r", encoding="utf-8") as file:
+            try:
+                config = json.load(file)
+            except json.JSONDecodeError:
+                return {}
+
+        if not isinstance(config, dict):
+            return {}
+
+        return config
+
+    def parse_camera_settings(self, raw_settings):
+        labels = {
+            "height": "Высота",
+            "width": "Ширина",
+            "fps": "FPS",
+            "device_index": "Индекс устройства",
+        }
+        settings = {}
+
+        for key, label in labels.items():
+            try:
+                settings[key] = int(raw_settings[key])
+            except (TypeError, ValueError):
+                raise ValueError(f"{label}: введите целое число") from None
+
+        if settings["height"] <= 0:
+            raise ValueError("Высота должна быть больше 0")
+        if settings["width"] <= 0:
+            raise ValueError("Ширина должна быть больше 0")
+        if settings["fps"] <= 0:
+            raise ValueError("FPS должен быть больше 0")
+        if settings["device_index"] < 0:
+            raise ValueError("Индекс устройства должен быть больше или равен 0")
+
+        return settings
+
+    def write_camera_config(self, camera_settings):
+        config = DEFAULT_CAMERA_CONFIG.copy()
+        config.update(self.read_camera_config())
+        config.update(camera_settings)
+
+        with CAMERA_CONFIG_PATH.open("w", encoding="utf-8") as file:
+            json.dump(config, file, ensure_ascii=False, indent=2)
+            file.write("\n")
 
     def write_env_values(self, values):
         lines = []
@@ -338,8 +491,56 @@ class MainWindow(QMainWindow):
             is_scanned=False,
         )
 
+    def start_settings_camera(self):
+        self.stop_settings_camera()
+        try:
+            self.settings_camera, self.settings_camera_settings = open_configured_camera()
+        except ValueError as error:
+            self.settings_camera = None
+            self.settings_camera_settings = None
+            self.settings_camera_screen.show_message("Камера не запущена")
+            QMessageBox.warning(self, "Камера", str(error))
+            return
+
+        fps = self.settings_camera_settings["fps"]
+        interval_ms = max(1, int(1000 / fps))
+        self.settings_camera_timer.setInterval(interval_ms)
+
+        if not self.settings_camera.isOpened():
+            device_index = self.settings_camera_settings["device_index"]
+            self.settings_camera.release()
+            self.settings_camera = None
+            self.settings_camera_settings = None
+            self.settings_camera_screen.show_message("Камера не найдена")
+            QMessageBox.warning(self, "Камера", f"Не удалось открыть камеру с index device = {device_index}")
+            return
+
+        self.refresh_settings_camera_frame()
+        self.settings_camera_timer.start()
+
+    def stop_settings_camera(self):
+        self.settings_camera_timer.stop()
+
+        if self.settings_camera is not None:
+            self.settings_camera.release()
+            self.settings_camera = None
+
+        self.settings_camera_settings = None
+
+    def refresh_settings_camera_frame(self):
+        if self.settings_camera is None:
+            return
+
+        success, frame = self.settings_camera.read()
+        if not success:
+            self.settings_camera_screen.show_message("Не удалось получить кадр")
+            return
+
+        self.settings_camera_screen.show_frame(frame)
+
     def closeEvent(self, event):
         self.stop_dataset_camera()
+        self.stop_settings_camera()
         super().closeEvent(event)
 
 

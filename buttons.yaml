@@ -46,6 +46,18 @@ settings_save_button:
   button_text: "Сохранить"
   button_file: "screens/settings_screen.py"
 
+settings_check_connection_button:
+  button_text: "Проверить соединение"
+  button_file: "screens/settings_screen.py"
+
+settings_camera_button:
+  button_text: "Вывод с камеры"
+  button_file: "screens/settings_screen.py"
+
+settings_camera_back_button:
+  button_text: "Назад"
+  button_file: "screens/settings_camera_screen.py"
+
 dataset_snapshot_button:
   button_text: "Сделать снимок"
   button_file: "screens/dataset_camera_screen.py"
