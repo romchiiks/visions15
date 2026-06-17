@@ -6,6 +6,8 @@ import re
 
 import cv2
 
+from services.perspective_warp_service import apply_perspective_warp
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CAMERA_CONFIG_PATH = PROJECT_ROOT / "camera_config.json"
@@ -225,6 +227,7 @@ def save_camera_image(
 
         if is_scanned:
             frame = _read_stable_scan_frame(camera, camera_settings)
+            frame = apply_perspective_warp(frame)
         else:
             success, frame = camera.read()
             if not success:
