@@ -1,5 +1,6 @@
 import json
 import random
+import re
 import sys
 from pathlib import Path
 
@@ -7,7 +8,7 @@ import yaml
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QStackedWidget
 
-from screens import AddDetailScreen, DatasetCameraScreen, HomeScreen, ImageScreen, ScanScreen
+from screens import AddDetailScreen, DatasetCameraScreen, HomeScreen, ImageScreen, ScanScreen, SettingsScreen
 from services.camera_service import (
     get_dataset_class_dir,
     open_configured_camera,
@@ -20,6 +21,7 @@ from services.camera_service import (
 BASE_DIR = Path(__file__).resolve().parent
 BUTTONS_PATH = BASE_DIR / "buttons.yaml"
 DETAILS_PATH = BASE_DIR / "details.json"
+ENV_PATH = BASE_DIR / ".env"
 
 
 def load_buttons_config():
@@ -57,18 +59,21 @@ class MainWindow(QMainWindow):
         self.image_screen = ImageScreen(self.buttons_config)
         self.add_detail_screen = AddDetailScreen(self.buttons_config)
         self.dataset_camera_screen = DatasetCameraScreen(self.buttons_config)
+        self.settings_screen = SettingsScreen(self.buttons_config)
 
         self.stack.addWidget(self.home_screen)
         self.stack.addWidget(self.scan_screen)
         self.stack.addWidget(self.image_screen)
         self.stack.addWidget(self.add_detail_screen)
         self.stack.addWidget(self.dataset_camera_screen)
+        self.stack.addWidget(self.settings_screen)
 
         self.connect_screen_signals()
 
     def connect_screen_signals(self):
         self.home_screen.scan_requested.connect(self.open_scan_screen)
         self.home_screen.add_detail_requested.connect(self.open_add_detail_screen)
+        self.home_screen.settings_requested.connect(self.open_settings_screen)
 
         self.scan_screen.back_requested.connect(self.open_home_screen)
         self.scan_screen.scan_requested.connect(self.scan_camera_image)
@@ -82,6 +87,9 @@ class MainWindow(QMainWindow):
         self.dataset_camera_screen.back_requested.connect(self.return_to_add_detail_screen)
         self.dataset_camera_screen.snapshot_requested.connect(self.take_dataset_snapshot)
         self.dataset_camera_screen.record_requested.connect(self.toggle_dataset_recording)
+
+        self.settings_screen.back_requested.connect(self.open_home_screen)
+        self.settings_screen.save_requested.connect(self.save_settings)
 
     def open_home_screen(self):
         self.stop_dataset_camera()
@@ -113,6 +121,57 @@ class MainWindow(QMainWindow):
         self.dataset_camera_screen.set_class_name(self.active_dataset_class_name)
         self.stack.setCurrentWidget(self.dataset_camera_screen)
         self.start_dataset_camera()
+
+    def open_settings_screen(self):
+        self.stop_dataset_camera()
+        self.stack.setCurrentWidget(self.settings_screen)
+
+    def save_settings(self):
+        unload_times = self.settings_screen.unload_times()
+        if not self.are_unload_times_valid(unload_times):
+            QMessageBox.warning(self, "Настройки", "Введите часы выгрузки в формате ЧЧ:ММ")
+            return
+
+        self.write_env_values(
+            {
+                "API_KEY": self.settings_screen.api_key(),
+                "UNLOAD_TIME_1": unload_times[0],
+                "UNLOAD_TIME_2": unload_times[1],
+            }
+        )
+        QMessageBox.information(self, "Настройки", "Настройки сохранены")
+
+    def are_unload_times_valid(self, unload_times):
+        time_pattern = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+        return all(time_pattern.fullmatch(unload_time) for unload_time in unload_times)
+
+    def write_env_values(self, values):
+        lines = []
+        updated_keys = set()
+
+        if ENV_PATH.exists():
+            lines = ENV_PATH.read_text(encoding="utf-8").splitlines()
+
+        for index, line in enumerate(lines):
+            stripped_line = line.lstrip()
+            for key, value in values.items():
+                if stripped_line.startswith(f"{key}=") or stripped_line.startswith(f"export {key}="):
+                    lines[index] = f"{key}={self.format_env_value(value)}"
+                    updated_keys.add(key)
+                    break
+
+        for key, value in values.items():
+            if key not in updated_keys:
+                lines.append(f"{key}={self.format_env_value(value)}")
+
+        ENV_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def format_env_value(self, value):
+        if value == "" or any(char.isspace() or char in ['"', "'", "#", "\\"] for char in value):
+            escaped_value = value.replace("\\", "\\\\").replace('"', '\\"')
+            return f'"{escaped_value}"'
+
+        return value
 
     def add_detail_class(self):
         class_name = self.add_detail_screen.detail_name()

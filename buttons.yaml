@@ -6,6 +6,10 @@ add_detail_button:
   button_text: "Добавить деталь"
   button_file: "screens/home_screen.py"
 
+settings_button:
+  button_text: "Настройки"
+  button_file: "screens/home_screen.py"
+
 scan_back_button:
   button_text: "Назад"
   button_file: "screens/scan_screen.py"
@@ -33,6 +37,14 @@ detail_add_button:
 dataset_camera_back_button:
   button_text: "Назад"
   button_file: "screens/dataset_camera_screen.py"
+
+settings_back_button:
+  button_text: "Назад"
+  button_file: "screens/settings_screen.py"
+
+settings_save_button:
+  button_text: "Сохранить"
+  button_file: "screens/settings_screen.py"
 
 dataset_snapshot_button:
   button_text: "Сделать снимок"
