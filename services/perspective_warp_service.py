@@ -45,14 +45,25 @@ def _build_src_points(corners, ids):
     )
 
 
+def detect_aruco_marker_rectangle(image):
+    detector = _create_detector()
+    corners, ids = _detect_markers(image, detector)
+    return _build_src_points(corners, ids)
+
+
+def draw_aruco_marker_rectangle(image, rectangle_points):
+    output_image = image.copy()
+    points = rectangle_points.astype(np.int32).reshape((-1, 1, 2))
+    cv2.polylines(output_image, [points], isClosed=True, color=(0, 255, 0), thickness=3)
+    return output_image
+
+
 def apply_perspective_warp(
     image,
     output_width: int = OUTPUT_WIDTH,
     output_height: int = OUTPUT_HEIGHT,
 ):
-    detector = _create_detector()
-    corners, ids = _detect_markers(image, detector)
-    src_points = _build_src_points(corners, ids)
+    src_points = detect_aruco_marker_rectangle(image)
     dst_points = np.array(
         [
             [0, 0],

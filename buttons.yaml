@@ -35,7 +35,7 @@ detail_add_button:
   button_file: "screens/add_detail_screen.py"
 
 dataset_camera_back_button:
-  button_text: "Назад"
+  button_text: "Отменить"
   button_file: "screens/dataset_camera_screen.py"
 
 settings_back_button:
@@ -64,4 +64,8 @@ dataset_snapshot_button:
 
 dataset_record_button:
   button_text: "Начать запись"
+  button_file: "screens/dataset_camera_screen.py"
+
+dataset_save_button:
+  button_text: "Сохранить"
   button_file: "screens/dataset_camera_screen.py"

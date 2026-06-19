@@ -14,6 +14,7 @@ class DatasetCameraScreen(QWidget):
     back_requested = Signal()
     snapshot_requested = Signal()
     record_requested = Signal()
+    save_requested = Signal()
 
     def __init__(self, buttons_config):
         super().__init__()
@@ -31,6 +32,7 @@ class DatasetCameraScreen(QWidget):
 
         self.camera_title = QLabel("Новый класс детали")
         self.camera_title.setObjectName("title")
+        self.images_count_label = QLabel("Фотографий: 0")
 
         self.camera_label = QLabel()
         self.camera_label.setAlignment(Qt.AlignCenter)
@@ -40,14 +42,22 @@ class DatasetCameraScreen(QWidget):
         actions = QHBoxLayout()
         self.snapshot_button = create_button(buttons_config, "dataset_snapshot_button")
         self.record_button = create_button(buttons_config, "dataset_record_button")
+        self.save_button = create_button(buttons_config, "dataset_save_button")
         self.snapshot_button.clicked.connect(self.snapshot_requested.emit)
         self.record_button.clicked.connect(self.record_requested.emit)
+        self.save_button.clicked.connect(self.save_requested.emit)
         actions.addWidget(self.snapshot_button)
         actions.addWidget(self.record_button)
+        actions.addWidget(self.save_button)
         actions.addStretch()
 
+        title_row = QHBoxLayout()
+        title_row.addWidget(self.camera_title)
+        title_row.addWidget(self.images_count_label)
+        title_row.addStretch()
+
         layout.addLayout(nav)
-        layout.addWidget(self.camera_title)
+        layout.addLayout(title_row)
         layout.addWidget(self.camera_label, stretch=1)
         layout.addLayout(actions)
 
@@ -60,6 +70,9 @@ class DatasetCameraScreen(QWidget):
             return
 
         self.record_button.setText(self.buttons_config["dataset_record_button"]["button_text"])
+
+    def set_images_count(self, images_count):
+        self.images_count_label.setText(f"Фотографий: {images_count}")
 
     def show_message(self, text):
         self.camera_label.setPixmap(QPixmap())
