@@ -31,6 +31,9 @@ class UploadRequestError(RuntimeError):
 class DatasetUpdateArchive:
     path: Path
     metadata: dict
+    metadata_path: Path
+    remaining_metadata: dict
+    backup_class_dirs: list[tuple[Path, Path]]
 
 
 def upload_selected_classes(
@@ -44,12 +47,14 @@ def upload_selected_classes(
         class_names,
         dataset_dir=dataset_dir,
         backup_dataset_dir=backup_dataset_dir,
+        finalize_dataset=False,
     )
     response = upload_project(
         archive.metadata,
         env_path=env_path,
         timeout_seconds=timeout_seconds,
     )
+    finalize_dataset_update_archive(archive)
 
     return [archive.path], response
 
@@ -84,6 +89,7 @@ def create_dataset_update_archive_result(
     class_names: Iterable[str],
     dataset_dir: Path | str = DEFAULT_DATASET_DIR,
     backup_dataset_dir: Path | str | None = None,
+    finalize_dataset: bool = True,
 ) -> DatasetUpdateArchive:
     dataset_dir = Path(dataset_dir).resolve()
     backup_dataset_dir = resolve_backup_dataset_dir(dataset_dir, backup_dataset_dir)
@@ -130,13 +136,22 @@ def create_dataset_update_archive_result(
     except tarfile.TarError as error:
         raise UploadArchiveError(f"Не удалось создать архив {archive_path}") from error
 
-    move_class_dirs_to_backup(backup_class_dirs)
-    write_metadata(metadata_path, remaining_metadata)
-
-    return DatasetUpdateArchive(
+    archive = DatasetUpdateArchive(
         path=archive_path,
         metadata=archive_metadata,
+        metadata_path=metadata_path,
+        remaining_metadata=remaining_metadata,
+        backup_class_dirs=backup_class_dirs,
     )
+    if finalize_dataset:
+        finalize_dataset_update_archive(archive)
+
+    return archive
+
+
+def finalize_dataset_update_archive(archive: DatasetUpdateArchive) -> None:
+    move_class_dirs_to_backup(archive.backup_class_dirs)
+    write_metadata(archive.metadata_path, archive.remaining_metadata)
 
 
 def create_class_archive(
@@ -318,8 +333,6 @@ def prepare_backup_class_dirs(
     class_dirs: Iterable[tuple[str, Path]],
     backup_dataset_dir: Path,
 ) -> list[tuple[Path, Path]]:
-    backup_dataset_dir.mkdir(parents=True, exist_ok=True)
-
     backup_class_dirs = []
     reserved_destinations = set()
     for class_name, class_dir in class_dirs:
@@ -349,6 +362,11 @@ def unique_backup_class_dir(
 
 
 def move_class_dirs_to_backup(class_dirs: Iterable[tuple[Path, Path]]) -> None:
+    class_dirs = list(class_dirs)
+    if not class_dirs:
+        return
+
+    class_dirs[0][1].parent.mkdir(parents=True, exist_ok=True)
     for class_dir, destination_dir in class_dirs:
         shutil.move(str(class_dir), str(destination_dir))
 
@@ -373,7 +391,10 @@ def build_projects_url(api_url: str) -> str:
     if not re.match(r"^https?://", api_url):
         api_url = f"http://{api_url}"
 
-    return f"{api_url}/projects"
+    if api_url.endswith("/api/v1"):
+        return f"{api_url}/projects"
+
+    return f"{api_url}/api/v1/projects"
 
 
 def read_env_value(target_key: str, env_path: Path | str = DEFAULT_ENV_PATH) -> str | None:

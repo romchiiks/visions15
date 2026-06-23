@@ -211,10 +211,14 @@ def write_dataset_metadata(details: dict, dataset_name: str | None = None) -> Pa
 
     for class_name, article in details.items():
         class_name = validate_class_name(str(class_name))
+        images_count = count_dataset_images(class_name)
+        if images_count == 0:
+            continue
+
         classes[class_name] = {
             "article": str(article),
             "directory": class_name,
-            "images_count": count_dataset_images(class_name),
+            "images_count": images_count,
         }
 
     metadata = {
