@@ -35,10 +35,15 @@ class UploadScreen(QWidget):
         self.classes_table.setHorizontalHeaderLabels(
             ["Выбор", "Класс", "Артикул", "Кол-во изобр."]
         )
-        self.classes_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.classes_table.horizontalHeader().setSectionResizeMode(
+        self.classes_table.setWordWrap(True)
+        self.classes_table.setTextElideMode(Qt.ElideNone)
+        self.classes_table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.classes_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.classes_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.classes_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
+        self.classes_table.setColumnWidth(
             0,
-            QHeaderView.ResizeToContents,
+            self.classes_table.horizontalHeader().sectionSizeHint(0),
         )
         self.classes_table.verticalHeader().setVisible(False)
 
@@ -69,6 +74,8 @@ class UploadScreen(QWidget):
             self.classes_table.setItem(row, 1, class_item)
             self.classes_table.setItem(row, 2, article_item)
             self.classes_table.setItem(row, 3, images_count_item)
+
+        self.classes_table.resizeRowsToContents()
 
     def selected_classes(self):
         selected = []
