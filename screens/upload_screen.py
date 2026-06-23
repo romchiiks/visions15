@@ -31,9 +31,9 @@ class UploadScreen(QWidget):
         nav.addWidget(self.upload_action_button)
         nav.addStretch()
 
-        self.classes_table = QTableWidget(0, 3)
+        self.classes_table = QTableWidget(0, 4)
         self.classes_table.setHorizontalHeaderLabels(
-            ["Выбор", "Класс", "Кол-во изобр."]
+            ["Выбор", "Класс", "Артикул", "Кол-во изобр."]
         )
         self.classes_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.classes_table.verticalHeader().setVisible(False)
@@ -41,10 +41,11 @@ class UploadScreen(QWidget):
         layout.addLayout(nav)
         layout.addWidget(self.classes_table)
 
-    def show_classes(self, classes):
+    def show_classes(self, classes, details):
         self.classes_table.setRowCount(len(classes))
         for row, (class_name, class_data) in enumerate(classes.items()):
             images_count = class_data.get("images_count", 0)
+            article = details.get(class_name, "")
 
             select_item = QTableWidgetItem()
             select_item.setFlags(
@@ -53,14 +54,17 @@ class UploadScreen(QWidget):
             select_item.setCheckState(Qt.Unchecked)
 
             class_item = QTableWidgetItem(str(class_name))
+            article_item = QTableWidgetItem(str(article))
             images_count_item = QTableWidgetItem(str(images_count))
 
             class_item.setFlags(class_item.flags() & ~Qt.ItemIsEditable)
+            article_item.setFlags(article_item.flags() & ~Qt.ItemIsEditable)
             images_count_item.setFlags(images_count_item.flags() & ~Qt.ItemIsEditable)
 
             self.classes_table.setItem(row, 0, select_item)
             self.classes_table.setItem(row, 1, class_item)
-            self.classes_table.setItem(row, 2, images_count_item)
+            self.classes_table.setItem(row, 2, article_item)
+            self.classes_table.setItem(row, 3, images_count_item)
 
     def selected_classes(self):
         selected = []

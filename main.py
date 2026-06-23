@@ -199,7 +199,7 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(self.upload_screen)
 
     def load_upload_classes(self):
-        self.upload_screen.show_classes(self.read_upload_classes())
+        self.upload_screen.show_classes(self.read_upload_classes(), self.read_details())
 
     def read_upload_classes(self):
         if not DATASET_METADATA_PATH.exists() or DATASET_METADATA_PATH.stat().st_size == 0:
