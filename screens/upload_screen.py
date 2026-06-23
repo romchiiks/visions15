@@ -36,6 +36,10 @@ class UploadScreen(QWidget):
             ["Выбор", "Класс", "Артикул", "Кол-во изобр."]
         )
         self.classes_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.classes_table.horizontalHeader().setSectionResizeMode(
+            0,
+            QHeaderView.ResizeToContents,
+        )
         self.classes_table.verticalHeader().setVisible(False)
 
         layout.addLayout(nav)
