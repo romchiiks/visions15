@@ -1,6 +1,7 @@
 import io
 import json
 import re
+import shutil
 import tarfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +12,7 @@ import requests
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DATASET_DIR = PROJECT_ROOT / "captures" / "dataset"
+DEFAULT_BACKUP_DATASET_DIR = PROJECT_ROOT / "captures" / "backup_dataset"
 DEFAULT_ENV_PATH = PROJECT_ROOT / ".env"
 DEFAULT_METADATA_PATH = DEFAULT_DATASET_DIR / "metadata.json"
 INVALID_CLASS_NAME_PATTERN = re.compile(r'[<>:"/\\|?*]')
@@ -34,12 +36,14 @@ class DatasetUpdateArchive:
 def upload_selected_classes(
     class_names: Iterable[str],
     dataset_dir: Path | str = DEFAULT_DATASET_DIR,
+    backup_dataset_dir: Path | str | None = None,
     env_path: Path | str = DEFAULT_ENV_PATH,
     timeout_seconds: int = UPLOAD_REQUEST_TIMEOUT_SECONDS,
 ) -> tuple[list[Path], requests.Response]:
     archive = create_dataset_update_archive_result(
         class_names,
         dataset_dir=dataset_dir,
+        backup_dataset_dir=backup_dataset_dir,
     )
     response = upload_project(
         archive.metadata,
@@ -53,25 +57,36 @@ def upload_selected_classes(
 def create_class_archives(
     class_names: Iterable[str],
     dataset_dir: Path | str = DEFAULT_DATASET_DIR,
+    backup_dataset_dir: Path | str | None = None,
 ) -> list[Path]:
-    return [create_dataset_update_archive(class_names, dataset_dir=dataset_dir)]
+    return [
+        create_dataset_update_archive(
+            class_names,
+            dataset_dir=dataset_dir,
+            backup_dataset_dir=backup_dataset_dir,
+        )
+    ]
 
 
 def create_dataset_update_archive(
     class_names: Iterable[str],
     dataset_dir: Path | str = DEFAULT_DATASET_DIR,
+    backup_dataset_dir: Path | str | None = None,
 ) -> Path:
     return create_dataset_update_archive_result(
         class_names,
         dataset_dir=dataset_dir,
+        backup_dataset_dir=backup_dataset_dir,
     ).path
 
 
 def create_dataset_update_archive_result(
     class_names: Iterable[str],
     dataset_dir: Path | str = DEFAULT_DATASET_DIR,
+    backup_dataset_dir: Path | str | None = None,
 ) -> DatasetUpdateArchive:
     dataset_dir = Path(dataset_dir).resolve()
+    backup_dataset_dir = resolve_backup_dataset_dir(dataset_dir, backup_dataset_dir)
     metadata_path = dataset_dir / "metadata.json"
     metadata = read_metadata(metadata_path)
     dataset_update_name = validate_dataset_update_name(read_dataset_project_name(metadata))
@@ -101,6 +116,7 @@ def create_dataset_update_archive_result(
     archive_path = dataset_dir / f"{dataset_update_name}.tar.gz"
     archive_metadata = metadata_with_classes(metadata, selected_class_names)
     remaining_metadata = metadata_without_classes(metadata, selected_class_names)
+    backup_class_dirs = prepare_backup_class_dirs(class_dirs, backup_dataset_dir)
 
     try:
         with tarfile.open(archive_path, "w:gz") as archive:
@@ -114,6 +130,7 @@ def create_dataset_update_archive_result(
     except tarfile.TarError as error:
         raise UploadArchiveError(f"Не удалось создать архив {archive_path}") from error
 
+    move_class_dirs_to_backup(backup_class_dirs)
     write_metadata(metadata_path, remaining_metadata)
 
     return DatasetUpdateArchive(
@@ -285,6 +302,55 @@ def metadata_without_classes(metadata: dict, class_names: Iterable[str]) -> dict
             if class_name not in excluded_class_names
         },
     }
+
+
+def resolve_backup_dataset_dir(
+    dataset_dir: Path,
+    backup_dataset_dir: Path | str | None = None,
+) -> Path:
+    if backup_dataset_dir is None:
+        return (dataset_dir.parent / DEFAULT_BACKUP_DATASET_DIR.name).resolve()
+
+    return Path(backup_dataset_dir).resolve()
+
+
+def prepare_backup_class_dirs(
+    class_dirs: Iterable[tuple[str, Path]],
+    backup_dataset_dir: Path,
+) -> list[tuple[Path, Path]]:
+    backup_dataset_dir.mkdir(parents=True, exist_ok=True)
+
+    backup_class_dirs = []
+    reserved_destinations = set()
+    for class_name, class_dir in class_dirs:
+        destination_dir = unique_backup_class_dir(
+            backup_dataset_dir,
+            class_name,
+            reserved_destinations,
+        )
+        backup_class_dirs.append((class_dir, destination_dir))
+        reserved_destinations.add(destination_dir)
+
+    return backup_class_dirs
+
+
+def unique_backup_class_dir(
+    backup_dataset_dir: Path,
+    class_name: str,
+    reserved_destinations: set[Path],
+) -> Path:
+    destination_dir = backup_dataset_dir / class_name
+    suffix = 1
+    while destination_dir.exists() or destination_dir in reserved_destinations:
+        destination_dir = backup_dataset_dir / f"{class_name}_{suffix}"
+        suffix += 1
+
+    return destination_dir
+
+
+def move_class_dirs_to_backup(class_dirs: Iterable[tuple[Path, Path]]) -> None:
+    for class_dir, destination_dir in class_dirs:
+        shutil.move(str(class_dir), str(destination_dir))
 
 
 def add_metadata_to_archive(
