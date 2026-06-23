@@ -241,6 +241,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Выгрузка", str(error))
             return
 
+        self.load_upload_classes()
+
         archive_message_title = "Создан архив" if len(archive_paths) == 1 else "Созданы архивы"
         message = (
             f"{archive_message_title}:\n"

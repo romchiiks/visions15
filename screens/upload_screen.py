@@ -11,6 +11,9 @@ from PySide6.QtWidgets import (
 from screens.common import create_button
 
 
+SELECT_COLUMN_WIDTH = 150
+
+
 class UploadScreen(QWidget):
     back_requested = Signal()
     upload_requested = Signal()
@@ -33,7 +36,7 @@ class UploadScreen(QWidget):
 
         self.classes_table = QTableWidget(0, 4)
         self.classes_table.setHorizontalHeaderLabels(
-            ["Выбор", "Класс", "Артикул", "Кол-во изобр."]
+            ["Выбрать все", "Класс", "Артикул", "Кол-во изобр."]
         )
         self.classes_table.setWordWrap(True)
         self.classes_table.setTextElideMode(Qt.ElideNone)
@@ -41,11 +44,21 @@ class UploadScreen(QWidget):
         self.classes_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.classes_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.classes_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
-        self.classes_table.setColumnWidth(
-            0,
-            self.classes_table.horizontalHeader().sectionSizeHint(0),
+        self.classes_table.horizontalHeader().sectionClicked.connect(
+            self.handle_header_section_clicked
         )
+        self.classes_table.setColumnWidth(0, SELECT_COLUMN_WIDTH)
+        self.classes_table.verticalHeader().setMinimumSectionSize(48)
+        self.classes_table.verticalHeader().setDefaultSectionSize(48)
         self.classes_table.verticalHeader().setVisible(False)
+        self.classes_table.setStyleSheet(
+            """
+            QTableWidget::indicator {
+                width: 26px;
+                height: 26px;
+            }
+            """
+        )
 
         layout.addLayout(nav)
         layout.addWidget(self.classes_table)
@@ -61,6 +74,7 @@ class UploadScreen(QWidget):
                 Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable
             )
             select_item.setCheckState(Qt.Unchecked)
+            select_item.setTextAlignment(Qt.AlignCenter)
 
             class_item = QTableWidgetItem(str(class_name))
             article_item = QTableWidgetItem(str(article))
@@ -76,6 +90,17 @@ class UploadScreen(QWidget):
             self.classes_table.setItem(row, 3, images_count_item)
 
         self.classes_table.resizeRowsToContents()
+        self.classes_table.setColumnWidth(0, SELECT_COLUMN_WIDTH)
+
+    def handle_header_section_clicked(self, section):
+        if section == 0:
+            self.select_all_classes()
+
+    def select_all_classes(self):
+        for row in range(self.classes_table.rowCount()):
+            select_item = self.classes_table.item(row, 0)
+            if select_item is not None:
+                select_item.setCheckState(Qt.Checked)
 
     def selected_classes(self):
         selected = []
