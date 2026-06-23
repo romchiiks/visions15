@@ -2,7 +2,6 @@ import json
 import random
 import re
 import sys
-import tarfile
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -26,7 +25,6 @@ from screens import (
 from screens.common import LoadingDialog
 from services.camera_service import (
     CAMERA_CONFIG_PATH,
-    DATASET_DIR,
     DATASET_METADATA_PATH,
     DEFAULT_CAMERA_CONFIG,
     count_dataset_images,
@@ -40,6 +38,12 @@ from services.camera_service import (
 from services.perspective_warp_service import (
     detect_aruco_marker_rectangle,
     draw_aruco_marker_rectangle,
+)
+from services.upload_service import (
+    UploadArchiveError,
+    UploadRequestError,
+    create_class_archives,
+    upload_project_from_metadata,
 )
 
 
@@ -230,33 +234,26 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            archive_paths = self.run_blocking_with_loading(
+            archive_paths, response_status_code = self.run_blocking_with_loading(
                 "Выгрузка",
-                lambda: self.create_class_archives(selected_classes),
+                lambda: self.upload_selected_classes_data(selected_classes),
             )
-        except (OSError, ValueError, tarfile.TarError) as error:
+        except (OSError, ValueError, json.JSONDecodeError, UploadArchiveError, UploadRequestError) as error:
             QMessageBox.warning(self, "Выгрузка", str(error))
             return
 
-        message = "Созданы архивы:\n" + "\n".join(str(path) for path in archive_paths)
+        message = (
+            "Созданы архивы:\n"
+            + "\n".join(str(path) for path in archive_paths)
+            + f"\n\nПроект отправлен. Код ответа: {response_status_code}"
+        )
 
         QMessageBox.information(self, "Выгрузка", message)
 
-    def create_class_archives(self, class_names):
-        archive_paths = []
-        for class_name in class_names:
-            class_name = validate_class_name(class_name)
-            class_dir = DATASET_DIR / class_name
-            if not class_dir.is_dir():
-                raise FileNotFoundError(f"Папка класса не найдена: {class_dir}")
-
-            archive_path = DATASET_DIR / f"{class_name}.tar.gz"
-            with tarfile.open(archive_path, "w:gz") as archive:
-                archive.add(class_dir, arcname=class_name)
-
-            archive_paths.append(archive_path)
-
-        return archive_paths
+    def upload_selected_classes_data(self, selected_classes):
+        archive_paths = create_class_archives(selected_classes)
+        response = upload_project_from_metadata()
+        return archive_paths, response.status_code
 
     def reset_dataset_detail_state(self):
         self.active_dataset_class_name = None
