@@ -84,12 +84,15 @@ class SettingsScreen(QWidget):
         camera_layout = QGridLayout(camera_group)
         self.camera_height_input = QLineEdit()
         self.camera_width_input = QLineEdit()
+        self.camera_capture_interval_input = QLineEdit()
         self.camera_fps_input = QLineEdit()
         self.camera_device_index_input = QLineEdit()
         positive_int_validator = QIntValidator(1, 99999, self)
         device_index_validator = QIntValidator(0, 99999, self)
         self.camera_height_input.setValidator(positive_int_validator)
         self.camera_width_input.setValidator(positive_int_validator)
+        self.camera_capture_interval_input.setValidator(positive_int_validator)
+        self.camera_capture_interval_input.setPlaceholderText("Секунды")
         self.camera_fps_input.setValidator(positive_int_validator)
         self.camera_device_index_input.setValidator(device_index_validator)
 
@@ -97,17 +100,19 @@ class SettingsScreen(QWidget):
         camera_layout.addWidget(self.camera_height_input, 0, 1)
         camera_layout.addWidget(QLabel("Ширина"), 1, 0)
         camera_layout.addWidget(self.camera_width_input, 1, 1)
-        camera_layout.addWidget(QLabel("FPS"), 2, 0)
-        camera_layout.addWidget(self.camera_fps_input, 2, 1)
-        camera_layout.addWidget(QLabel("Индекс устройства"), 3, 0)
-        camera_layout.addWidget(self.camera_device_index_input, 3, 1)
+        camera_layout.addWidget(QLabel("Интервал записи"), 2, 0)
+        camera_layout.addWidget(self.camera_capture_interval_input, 2, 1)
+        camera_layout.addWidget(QLabel("FPS"), 3, 0)
+        camera_layout.addWidget(self.camera_fps_input, 3, 1)
+        camera_layout.addWidget(QLabel("Индекс устройства"), 4, 0)
+        camera_layout.addWidget(self.camera_device_index_input, 4, 1)
 
         camera_actions = QHBoxLayout()
         self.settings_camera_button = create_button(buttons_config, "settings_camera_button")
         self.settings_camera_button.clicked.connect(self.camera_output_requested.emit)
         camera_actions.addWidget(self.settings_camera_button)
         camera_actions.addStretch()
-        camera_layout.addLayout(camera_actions, 4, 0, 1, 2)
+        camera_layout.addLayout(camera_actions, 5, 0, 1, 2)
 
         layout.addLayout(nav)
         layout.addWidget(server_group)
@@ -126,9 +131,15 @@ class SettingsScreen(QWidget):
             self.second_unload_time_input.text().strip(),
         ]
 
+    def set_server_settings(self, settings):
+        self.api_key_input.setText(settings.get("api_key", ""))
+        self.first_unload_time_input.setText(settings.get("unload_time_1", ""))
+        self.second_unload_time_input.setText(settings.get("unload_time_2", ""))
+
     def set_camera_settings(self, settings):
         self.camera_height_input.setText(str(settings["height"]))
         self.camera_width_input.setText(str(settings["width"]))
+        self.camera_capture_interval_input.setText(str(settings["capture_interval"]))
         self.camera_fps_input.setText(str(settings["fps"]))
         self.camera_device_index_input.setText(str(settings["device_index"]))
 
@@ -136,6 +147,7 @@ class SettingsScreen(QWidget):
         return {
             "height": self.camera_height_input.text().strip(),
             "width": self.camera_width_input.text().strip(),
+            "capture_interval": self.camera_capture_interval_input.text().strip(),
             "fps": self.camera_fps_input.text().strip(),
             "device_index": self.camera_device_index_input.text().strip(),
         }

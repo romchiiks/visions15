@@ -14,12 +14,15 @@ CAMERA_CONFIG_PATH = PROJECT_ROOT / "camera_config.json"
 CAPTURES_DIR = PROJECT_ROOT / "captures"
 SCANNED_DIR = CAPTURES_DIR / "scanned"
 DATASET_DIR = CAPTURES_DIR / "dataset"
+DATASET_METADATA_PATH = DATASET_DIR / "metadata.json"
+DATASET_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 DEFAULT_CAMERA_CONFIG = {
     "device_index": 0,
     "mjpg": False,
     "fps": 1,
     "width": 640,
     "height": 480,
+    "capture_interval": 1,
     "scan_warmup_seconds": 2.0,
     "scan_max_wait_seconds": 5.0,
 }
@@ -27,6 +30,10 @@ DEFAULT_CAMERA_CONFIG = {
 
 def _timestamp() -> str:
     return datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")
+
+
+def _dataset_date() -> str:
+    return datetime.now().strftime("%d-%m-%Y")
 
 
 def _ensure_dir(target_dir: Path | str) -> Path:
@@ -53,6 +60,7 @@ def _load_camera_config() -> dict:
         "fps": config.get("fps", DEFAULT_CAMERA_CONFIG["fps"]),
         "width": config.get("width", DEFAULT_CAMERA_CONFIG["width"]),
         "height": config.get("height", DEFAULT_CAMERA_CONFIG["height"]),
+        "capture_interval": config.get("capture_interval", DEFAULT_CAMERA_CONFIG["capture_interval"]),
         "scan_warmup_seconds": config.get(
             "scan_warmup_seconds",
             DEFAULT_CAMERA_CONFIG["scan_warmup_seconds"],
@@ -102,6 +110,7 @@ def get_camera_settings(
         "fps": _get_int_setting(settings, "fps"),
         "width": _get_int_setting(settings, "width"),
         "height": _get_int_setting(settings, "height"),
+        "capture_interval": _get_int_setting(settings, "capture_interval"),
         "scan_warmup_seconds": _get_float_setting(settings, "scan_warmup_seconds"),
         "scan_max_wait_seconds": _get_float_setting(settings, "scan_max_wait_seconds"),
     }
@@ -114,6 +123,8 @@ def get_camera_settings(
         raise ValueError("width в camera_config.json должен быть больше 0")
     if settings["height"] <= 0:
         raise ValueError("height в camera_config.json должен быть больше 0")
+    if settings["capture_interval"] <= 0:
+        raise ValueError("capture_interval в camera_config.json должен быть больше 0")
     if settings["scan_warmup_seconds"] < 0:
         raise ValueError("scan_warmup_seconds в camera_config.json должен быть больше или равен 0")
     if settings["scan_max_wait_seconds"] <= 0:
@@ -153,7 +164,94 @@ def validate_class_name(class_name: str) -> str:
 
 def get_dataset_class_dir(class_name: str) -> Path:
     class_name = validate_class_name(class_name)
-    return _ensure_dir(DATASET_DIR / class_name)
+    class_dir = _ensure_dir(DATASET_DIR / class_name)
+    _ensure_dir(class_dir / "images")
+    return class_dir
+
+
+def get_dataset_class_images_dir(class_name: str) -> Path:
+    return _ensure_dir(get_dataset_class_dir(class_name) / "images")
+
+
+def get_dataset_image_paths(class_name: str) -> list[Path]:
+    class_name = validate_class_name(class_name)
+    images_dir = DATASET_DIR / class_name / "images"
+    if not images_dir.exists():
+        return []
+
+    return sorted(
+        image_path
+        for image_path in images_dir.iterdir()
+        if image_path.is_file() and image_path.suffix.lower() in DATASET_IMAGE_EXTENSIONS
+    )
+
+
+def count_dataset_images(class_name: str) -> int:
+    return len(get_dataset_image_paths(class_name))
+
+
+def _next_dataset_image_path(class_name: str) -> Path:
+    images_dir = get_dataset_class_images_dir(class_name)
+    next_index = count_dataset_images(class_name) + 1
+
+    while True:
+        image_path = images_dir / f"{class_name}_{next_index:03d}.jpeg"
+        if not image_path.exists():
+            return image_path
+
+        next_index += 1
+
+
+def write_dataset_metadata(details: dict, dataset_name: str | None = None) -> Path:
+    _ensure_dir(DATASET_DIR)
+    if dataset_name is None:
+        dataset_name = f"dataset-{_dataset_date()}"
+
+    classes = {}
+
+    for class_name, article in details.items():
+        class_name = validate_class_name(str(class_name))
+        images_count = count_dataset_images(class_name)
+        if images_count == 0:
+            continue
+
+        classes[class_name] = {
+            "article": str(article),
+            "directory": class_name,
+            "images_count": images_count,
+        }
+
+    metadata = {
+        "schema_version": "1.0",
+        "dataset_update": {
+            "name": dataset_name,
+        },
+        "classes": classes,
+    }
+
+    with DATASET_METADATA_PATH.open("w", encoding="utf-8") as metadata_file:
+        json.dump(metadata, metadata_file, ensure_ascii=False, indent=2)
+        metadata_file.write("\n")
+
+    return DATASET_METADATA_PATH
+
+
+def remove_empty_dataset_class_dir(class_name: str) -> None:
+    class_name = validate_class_name(class_name)
+    class_dir = DATASET_DIR / class_name
+    images_dir = class_dir / "images"
+
+    if images_dir.exists():
+        try:
+            images_dir.rmdir()
+        except OSError:
+            pass
+
+    if class_dir.exists():
+        try:
+            class_dir.rmdir()
+        except OSError:
+            pass
 
 
 def _write_image(image_path: Path, frame) -> None:
@@ -202,11 +300,10 @@ def save_frame_image(frame, class_name: str, is_scanned: bool = False) -> Path:
     if is_scanned:
         captures_dir = _ensure_dir(SCANNED_DIR)
         image_name = f"{_timestamp()}.jpeg"
+        image_path = captures_dir / image_name
     else:
-        captures_dir = get_dataset_class_dir(class_name)
-        image_name = f"{class_name}_{_timestamp()}.jpeg"
+        image_path = _next_dataset_image_path(class_name)
 
-    image_path = captures_dir / image_name
     _write_image(image_path, frame)
 
     return image_path
@@ -249,7 +346,7 @@ def save_camera_image_stream(
     camera, camera_settings = open_configured_camera(device_index=device_index, fps=fps)
 
     saved_paths: list[Path] = []
-    interval_seconds = 1 / camera_settings["fps"]
+    interval_seconds = camera_settings["capture_interval"]
     started_at = monotonic()
 
     try:

@@ -4,7 +4,9 @@ import re
 import sys
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from time import monotonic, sleep
 
 import yaml
 from PySide6.QtCore import QTimer
@@ -18,15 +20,29 @@ from screens import (
     ScanScreen,
     SettingsCameraScreen,
     SettingsScreen,
+    UploadScreen,
 )
+from screens.common import LoadingDialog
 from services.camera_service import (
     CAMERA_CONFIG_PATH,
+    DATASET_METADATA_PATH,
     DEFAULT_CAMERA_CONFIG,
-    get_dataset_class_dir,
+    count_dataset_images,
     open_configured_camera,
+    remove_empty_dataset_class_dir,
     save_camera_image,
     save_frame_image,
     validate_class_name,
+    write_dataset_metadata,
+)
+from services.perspective_warp_service import (
+    detect_aruco_marker_rectangle,
+    draw_aruco_marker_rectangle,
+)
+from services.upload_service import (
+    UploadArchiveError,
+    UploadRequestError,
+    upload_selected_classes,
 )
 
 
@@ -51,12 +67,19 @@ class MainWindow(QMainWindow):
         self.buttons_config = load_buttons_config()
         self.last_scanned_image_path = None
         self.active_dataset_class_name = None
+        self.active_dataset_article = None
+        self.active_dataset_is_new_class = False
         self.dataset_camera = None
         self.dataset_camera_settings = None
         self.dataset_current_frame = None
+        self.dataset_marker_rectangle = None
+        self.dataset_pending_frames = []
+        self.dataset_saved_images_count = 0
         self.dataset_recording = False
         self.settings_camera = None
         self.settings_camera_settings = None
+        self.loading_dialog = LoadingDialog(self)
+        self.loading_executor = ThreadPoolExecutor(max_workers=1)
 
         self.stack = QStackedWidget()
         self.setCentralWidget(self.stack)
@@ -77,6 +100,7 @@ class MainWindow(QMainWindow):
         self.scan_screen = ScanScreen(self.buttons_config)
         self.image_screen = ImageScreen(self.buttons_config)
         self.add_detail_screen = AddDetailScreen(self.buttons_config)
+        self.upload_screen = UploadScreen(self.buttons_config)
         self.dataset_camera_screen = DatasetCameraScreen(self.buttons_config)
         self.settings_screen = SettingsScreen(self.buttons_config)
         self.settings_camera_screen = SettingsCameraScreen(self.buttons_config)
@@ -85,15 +109,43 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.scan_screen)
         self.stack.addWidget(self.image_screen)
         self.stack.addWidget(self.add_detail_screen)
+        self.stack.addWidget(self.upload_screen)
         self.stack.addWidget(self.dataset_camera_screen)
         self.stack.addWidget(self.settings_screen)
         self.stack.addWidget(self.settings_camera_screen)
 
         self.connect_screen_signals()
 
+    def show_loading(self, text="Загрузка"):
+        self.loading_dialog.start(text)
+        QApplication.processEvents()
+
+    def hide_loading(self):
+        self.loading_dialog.stop()
+        QApplication.processEvents()
+
+    def process_loading_events(self):
+        QApplication.processEvents()
+
+    def run_with_current_loading(self, operation):
+        future = self.loading_executor.submit(operation)
+        while not future.done():
+            self.process_loading_events()
+            sleep(0.03)
+
+        return future.result()
+
+    def run_blocking_with_loading(self, text, operation):
+        self.show_loading(text)
+        try:
+            return self.run_with_current_loading(operation)
+        finally:
+            self.hide_loading()
+
     def connect_screen_signals(self):
         self.home_screen.scan_requested.connect(self.open_scan_screen)
         self.home_screen.add_detail_requested.connect(self.open_add_detail_screen)
+        self.home_screen.upload_requested.connect(self.open_upload_screen)
         self.home_screen.settings_requested.connect(self.open_settings_screen)
 
         self.scan_screen.back_requested.connect(self.open_home_screen)
@@ -105,9 +157,13 @@ class MainWindow(QMainWindow):
         self.add_detail_screen.back_requested.connect(self.open_home_screen)
         self.add_detail_screen.add_detail_requested.connect(self.add_detail_class)
 
-        self.dataset_camera_screen.back_requested.connect(self.return_to_add_detail_screen)
+        self.upload_screen.back_requested.connect(self.open_home_screen)
+        self.upload_screen.upload_requested.connect(self.upload_selected_classes)
+
+        self.dataset_camera_screen.back_requested.connect(self.cancel_dataset_detail)
         self.dataset_camera_screen.snapshot_requested.connect(self.take_dataset_snapshot)
         self.dataset_camera_screen.record_requested.connect(self.toggle_dataset_recording)
+        self.dataset_camera_screen.save_requested.connect(self.save_dataset_images)
 
         self.settings_screen.back_requested.connect(self.open_home_screen)
         self.settings_screen.save_requested.connect(self.save_settings)
@@ -141,6 +197,73 @@ class MainWindow(QMainWindow):
         self.load_details()
         self.stack.setCurrentWidget(self.add_detail_screen)
 
+    def open_upload_screen(self):
+        self.stop_dataset_camera()
+        self.stop_settings_camera()
+        self.load_upload_classes()
+        self.stack.setCurrentWidget(self.upload_screen)
+
+    def load_upload_classes(self):
+        self.upload_screen.show_classes(self.read_upload_classes(), self.read_details())
+
+    def read_upload_classes(self):
+        if not DATASET_METADATA_PATH.exists() or DATASET_METADATA_PATH.stat().st_size == 0:
+            return {}
+
+        try:
+            with DATASET_METADATA_PATH.open("r", encoding="utf-8") as file:
+                metadata = json.load(file)
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+        classes = metadata.get("classes", {})
+        if not isinstance(classes, dict):
+            return {}
+
+        return {
+            str(class_name): class_data
+            for class_name, class_data in classes.items()
+            if isinstance(class_data, dict)
+        }
+
+    def upload_selected_classes(self):
+        selected_classes = self.upload_screen.selected_classes()
+        if not selected_classes:
+            QMessageBox.information(self, "Выгрузка", "Классы не выбраны")
+            return
+
+        try:
+            archive_paths, response_status_code = self.run_blocking_with_loading(
+                "Выгрузка",
+                lambda: self.upload_selected_classes_data(selected_classes),
+            )
+        except (OSError, ValueError, json.JSONDecodeError, UploadArchiveError, UploadRequestError) as error:
+            QMessageBox.warning(self, "Выгрузка", str(error))
+            return
+
+        self.load_upload_classes()
+
+        archive_message_title = "Создан архив" if len(archive_paths) == 1 else "Созданы архивы"
+        message = (
+            f"{archive_message_title}:\n"
+            + "\n".join(str(path) for path in archive_paths)
+            + f"\n\nПроект отправлен. Код ответа: {response_status_code}"
+        )
+
+        QMessageBox.information(self, "Выгрузка", message)
+
+    def upload_selected_classes_data(self, selected_classes):
+        archive_paths, response = upload_selected_classes(selected_classes)
+        return archive_paths, response.status_code
+
+    def reset_dataset_detail_state(self):
+        self.active_dataset_class_name = None
+        self.active_dataset_article = None
+        self.active_dataset_is_new_class = False
+        self.dataset_marker_rectangle = None
+        self.dataset_pending_frames = []
+        self.dataset_saved_images_count = 0
+
     def open_dataset_camera_screen(self):
         if self.active_dataset_class_name is None:
             QMessageBox.warning(self, "Добавление детали", "Сначала добавьте класс детали")
@@ -153,6 +276,7 @@ class MainWindow(QMainWindow):
     def open_settings_screen(self):
         self.stop_dataset_camera()
         self.stop_settings_camera()
+        self.load_server_settings()
         self.load_camera_settings()
         self.stack.setCurrentWidget(self.settings_screen)
 
@@ -174,26 +298,40 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Настройки", str(error))
             return
 
-        self.write_env_values(
-            {
-                "API_KEY": self.settings_screen.api_key(),
-                "UNLOAD_TIME_1": unload_times[0],
-                "UNLOAD_TIME_2": unload_times[1],
-            }
-        )
-        self.write_camera_config(camera_settings)
+        api_key = self.settings_screen.api_key()
+
+        def write_settings():
+            self.write_env_values(
+                {
+                    "API_KEY": api_key,
+                    "UNLOAD_TIME_1": unload_times[0],
+                    "UNLOAD_TIME_2": unload_times[1],
+                }
+            )
+            self.write_camera_config(camera_settings)
+
+        try:
+            self.run_blocking_with_loading("Сохранение настроек", write_settings)
+        except OSError as error:
+            QMessageBox.warning(self, "Настройки", str(error))
+            return
+
         QMessageBox.information(self, "Настройки", "Настройки сохранены")
 
     def check_server_connection(self):
-        api_hostname = self.read_env_value("API_HOSTNAME")
-        if not api_hostname:
+        api_url = self.read_env_value("API_URL")
+        if not api_url:
             QMessageBox.warning(self, "Настройки", "Соединение: ОШИБКА")
             return
 
-        health_url = self.build_health_url(api_hostname)
-        try:
+        health_url = self.build_health_url(api_url)
+
+        def request_health():
             with urllib.request.urlopen(health_url, timeout=SERVER_HEALTH_TIMEOUT_SECONDS) as response:
-                response_data = json.loads(response.read().decode("utf-8"))
+                return json.loads(response.read().decode("utf-8"))
+
+        try:
+            response_data = self.run_blocking_with_loading("Проверка соединения", request_health)
         except (TimeoutError, OSError, urllib.error.URLError, json.JSONDecodeError):
             QMessageBox.warning(self, "Настройки", "Соединение: ОШИБКА")
             return
@@ -204,12 +342,12 @@ class MainWindow(QMainWindow):
 
         QMessageBox.warning(self, "Настройки", "Соединение: ОШИБКА")
 
-    def build_health_url(self, api_hostname):
-        api_hostname = api_hostname.strip().rstrip("/")
-        if not re.match(r"^https?://", api_hostname):
-            api_hostname = f"http://{api_hostname}"
+    def build_health_url(self, api_url):
+        api_url = api_url.strip().rstrip("/")
+        if not re.match(r"^https?://", api_url):
+            api_url = f"http://{api_url}"
 
-        return f"{api_hostname}/api/v1/health"
+        return f"{api_url}/api/v1/health"
 
     def read_env_value(self, target_key):
         if not ENV_PATH.exists() or ENV_PATH.stat().st_size == 0:
@@ -242,6 +380,15 @@ class MainWindow(QMainWindow):
         time_pattern = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
         return all(time_pattern.fullmatch(unload_time) for unload_time in unload_times)
 
+    def load_server_settings(self):
+        self.settings_screen.set_server_settings(
+            {
+                "api_key": self.read_env_value("API_KEY") or "",
+                "unload_time_1": self.read_env_value("UNLOAD_TIME_1") or "",
+                "unload_time_2": self.read_env_value("UNLOAD_TIME_2") or "",
+            }
+        )
+
     def load_camera_settings(self):
         camera_config = self.read_camera_config()
         settings = DEFAULT_CAMERA_CONFIG.copy()
@@ -267,6 +414,7 @@ class MainWindow(QMainWindow):
         labels = {
             "height": "Высота",
             "width": "Ширина",
+            "capture_interval": "Интервал записи",
             "fps": "FPS",
             "device_index": "Индекс устройства",
         }
@@ -282,6 +430,8 @@ class MainWindow(QMainWindow):
             raise ValueError("Высота должна быть больше 0")
         if settings["width"] <= 0:
             raise ValueError("Ширина должна быть больше 0")
+        if settings["capture_interval"] <= 0:
+            raise ValueError("Интервал записи должен быть больше 0")
         if settings["fps"] <= 0:
             raise ValueError("FPS должен быть больше 0")
         if settings["device_index"] < 0:
@@ -335,19 +485,27 @@ class MainWindow(QMainWindow):
             return
 
         details = self.read_details()
-        if class_name not in details:
-            details[class_name] = self.generate_random_article(details.values())
-            self.write_details(details)
+        if class_name in details:
+            article = details[class_name]
+            is_new_class = False
+        else:
+            article = self.generate_random_article(details.values())
+            is_new_class = True
 
-        get_dataset_class_dir(class_name)
         self.active_dataset_class_name = class_name
+        self.active_dataset_article = article
+        self.active_dataset_is_new_class = is_new_class
+        self.dataset_pending_frames = []
+        self.dataset_saved_images_count = count_dataset_images(class_name)
         self.add_detail_screen.clear_detail_input()
-        self.load_details()
         self.open_dataset_camera_screen()
 
     def scan_camera_image(self):
         try:
-            self.last_scanned_image_path = save_camera_image(is_scanned=True)
+            self.last_scanned_image_path = self.run_blocking_with_loading(
+                "Сканирование",
+                lambda: save_camera_image(is_scanned=True),
+            )
         except (RuntimeError, ValueError) as error:
             self.last_scanned_image_path = None
             QMessageBox.warning(self, "Сканирование", str(error))
@@ -391,30 +549,44 @@ class MainWindow(QMainWindow):
 
     def start_dataset_camera(self):
         self.stop_dataset_camera()
+        self.update_dataset_images_count()
+        self.show_loading("Запуск камеры")
         try:
-            self.dataset_camera, self.dataset_camera_settings = open_configured_camera()
-        except ValueError as error:
-            self.dataset_camera = None
-            self.dataset_camera_settings = None
-            QMessageBox.warning(self, "Камера", str(error))
-            return
+            try:
+                self.dataset_camera, self.dataset_camera_settings = self.run_with_current_loading(
+                    open_configured_camera
+                )
+            except ValueError as error:
+                self.dataset_camera = None
+                self.dataset_camera_settings = None
+                self.hide_loading()
+                QMessageBox.warning(self, "Камера", str(error))
+                return
 
-        fps = self.dataset_camera_settings["fps"]
-        interval_ms = max(1, int(1000 / fps))
-        self.dataset_preview_timer.setInterval(interval_ms)
-        self.dataset_record_timer.setInterval(interval_ms)
+            fps = self.dataset_camera_settings["fps"]
+            preview_interval_ms = max(1, int(1000 / fps))
+            record_interval_ms = self.dataset_camera_settings["capture_interval"] * 1000
+            self.dataset_preview_timer.setInterval(preview_interval_ms)
+            self.dataset_record_timer.setInterval(record_interval_ms)
 
-        if not self.dataset_camera.isOpened():
-            device_index = self.dataset_camera_settings["device_index"]
-            self.dataset_camera.release()
-            self.dataset_camera = None
-            self.dataset_camera_settings = None
-            self.dataset_camera_screen.show_message("Камера не найдена")
-            QMessageBox.warning(self, "Камера", f"Не удалось открыть камеру с index device = {device_index}")
-            return
+            if not self.dataset_camera.isOpened():
+                device_index = self.dataset_camera_settings["device_index"]
+                self.dataset_camera.release()
+                self.dataset_camera = None
+                self.dataset_camera_settings = None
+                self.dataset_camera_screen.show_message("Камера не найдена")
+                self.hide_loading()
+                QMessageBox.warning(self, "Камера", f"Не удалось открыть камеру с index device = {device_index}")
+                return
 
-        self.refresh_dataset_camera_frame()
-        self.dataset_preview_timer.start()
+            self.loading_dialog.label.setText("Определение рабочей области")
+            self.process_loading_events()
+            if not self.detect_dataset_marker_rectangle_on_start():
+                return
+
+            self.dataset_preview_timer.start()
+        finally:
+            self.hide_loading()
 
     def stop_dataset_camera(self):
         self.dataset_preview_timer.stop()
@@ -428,6 +600,69 @@ class MainWindow(QMainWindow):
 
         self.dataset_camera_settings = None
         self.dataset_current_frame = None
+        self.dataset_marker_rectangle = None
+
+    def update_dataset_images_count(self):
+        self.dataset_camera_screen.set_images_count(
+            self.dataset_saved_images_count + len(self.dataset_pending_frames)
+        )
+
+    def detect_dataset_marker_rectangle_on_start(self):
+        while self.dataset_camera is not None:
+            frame = self.read_dataset_warmup_frame()
+            if frame is None:
+                return False
+
+            try:
+                self.dataset_marker_rectangle = detect_aruco_marker_rectangle(frame)
+            except RuntimeError:
+                self.dataset_marker_rectangle = None
+                self.dataset_camera_screen.show_frame(frame)
+                self.hide_loading()
+                should_retry = self.should_retry_dataset_marker_detection()
+                if should_retry:
+                    self.show_loading("Определение рабочей области")
+                    continue
+
+                self.cancel_dataset_detail()
+                return False
+
+            self.show_dataset_frame(frame)
+            return True
+
+        return False
+
+    def read_dataset_warmup_frame(self):
+        warmup_seconds = self.dataset_camera_settings["scan_warmup_seconds"]
+        started_at = monotonic()
+        last_frame = None
+
+        while self.dataset_camera is not None:
+            success, frame = self.dataset_camera.read()
+            if not success:
+                self.dataset_camera_screen.show_message("Не удалось получить кадр")
+                return None
+
+            last_frame = frame
+            self.dataset_current_frame = frame
+            if monotonic() - started_at >= warmup_seconds:
+                return last_frame
+
+            self.process_loading_events()
+            sleep(0.05)
+
+        return None
+
+    def should_retry_dataset_marker_detection(self):
+        message_box = QMessageBox(self)
+        message_box.setWindowTitle("Рабочая область")
+        message_box.setText("Рабочая область не определена")
+        retry_button = message_box.addButton("Попробовать снова", QMessageBox.AcceptRole)
+        message_box.addButton("Отмена", QMessageBox.RejectRole)
+        message_box.setDefaultButton(retry_button)
+        message_box.exec()
+
+        return message_box.clickedButton() == retry_button
 
     def refresh_dataset_camera_frame(self):
         if self.dataset_camera is None:
@@ -439,7 +674,16 @@ class MainWindow(QMainWindow):
             return
 
         self.dataset_current_frame = frame
-        self.dataset_camera_screen.show_frame(frame)
+        self.show_dataset_frame(frame)
+
+    def show_dataset_frame(self, frame):
+        if self.dataset_marker_rectangle is None:
+            self.dataset_camera_screen.show_frame(frame)
+            return
+
+        self.dataset_camera_screen.show_frame(
+            draw_aruco_marker_rectangle(frame, self.dataset_marker_rectangle)
+        )
 
     def take_dataset_snapshot(self):
         if self.active_dataset_class_name is None:
@@ -450,11 +694,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Камера", "Нет кадра для сохранения")
             return
 
-        save_frame_image(
-            self.dataset_current_frame,
-            class_name=self.active_dataset_class_name,
-            is_scanned=False,
-        )
+        self.dataset_pending_frames.append(self.dataset_current_frame.copy())
+        self.update_dataset_images_count()
 
     def toggle_dataset_recording(self):
         if self.dataset_recording:
@@ -484,17 +725,71 @@ class MainWindow(QMainWindow):
             return
 
         self.dataset_current_frame = frame
-        self.dataset_camera_screen.show_frame(frame)
-        save_frame_image(
-            frame,
-            class_name=self.active_dataset_class_name,
-            is_scanned=False,
-        )
+        self.show_dataset_frame(frame)
+        self.dataset_pending_frames.append(frame.copy())
+        self.update_dataset_images_count()
+
+    def save_dataset_images(self):
+        if self.active_dataset_class_name is None:
+            return
+        if self.dataset_recording:
+            self.toggle_dataset_recording()
+        if not self.dataset_pending_frames:
+            QMessageBox.information(self, "Датасет", "Нет новых фотографий для сохранения")
+            return
+
+        class_name = self.active_dataset_class_name
+        article = self.active_dataset_article
+        pending_frames = list(self.dataset_pending_frames)
+
+        def save_images():
+            for frame in pending_frames:
+                save_frame_image(
+                    frame,
+                    class_name=class_name,
+                    is_scanned=False,
+                )
+            details = self.read_details()
+            if class_name not in details:
+                details[class_name] = article
+                self.write_details(details)
+
+            images_count = count_dataset_images(class_name)
+            write_dataset_metadata(details)
+            return images_count
+
+        try:
+            images_count = self.run_blocking_with_loading("Сохранение", save_images)
+            self.dataset_pending_frames = []
+            self.dataset_saved_images_count = images_count
+        except (RuntimeError, ValueError, OSError) as error:
+            QMessageBox.warning(self, "Датасет", str(error))
+            return
+
+        self.update_dataset_images_count()
+        QMessageBox.information(self, "Датасет", "Успешно сохранено")
+        self.return_to_add_detail_screen()
+        self.reset_dataset_detail_state()
+
+    def cancel_dataset_detail(self):
+        class_name = self.active_dataset_class_name
+        is_new_class = self.active_dataset_is_new_class
+
+        self.stop_dataset_camera()
+        self.reset_dataset_detail_state()
+        if class_name is not None and is_new_class:
+            remove_empty_dataset_class_dir(class_name)
+
+        self.load_details()
+        self.stack.setCurrentWidget(self.add_detail_screen)
 
     def start_settings_camera(self):
         self.stop_settings_camera()
         try:
-            self.settings_camera, self.settings_camera_settings = open_configured_camera()
+            self.settings_camera, self.settings_camera_settings = self.run_blocking_with_loading(
+                "Запуск камеры",
+                open_configured_camera,
+            )
         except ValueError as error:
             self.settings_camera = None
             self.settings_camera_settings = None
@@ -541,6 +836,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         self.stop_dataset_camera()
         self.stop_settings_camera()
+        self.loading_executor.shutdown(wait=False, cancel_futures=True)
         super().closeEvent(event)
 
 

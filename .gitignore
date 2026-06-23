@@ -10,7 +10,6 @@ env/
 
 # Environment variables
 .env
-.env.*
 
 # Build artifacts
 build/
