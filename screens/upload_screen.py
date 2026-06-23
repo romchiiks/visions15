@@ -39,7 +39,7 @@ class UploadScreen(QWidget):
         self.classes_table.setTextElideMode(Qt.ElideNone)
         self.classes_table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.classes_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.classes_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.classes_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.classes_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
         self.classes_table.setColumnWidth(
             0,
