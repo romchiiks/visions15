@@ -317,12 +317,12 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Настройки", "Настройки сохранены")
 
     def check_server_connection(self):
-        api_hostname = self.read_env_value("API_HOSTNAME")
-        if not api_hostname:
+        api_url = self.read_env_value("API_URL")
+        if not api_url:
             QMessageBox.warning(self, "Настройки", "Соединение: ОШИБКА")
             return
 
-        health_url = self.build_health_url(api_hostname)
+        health_url = self.build_health_url(api_url)
 
         def request_health():
             with urllib.request.urlopen(health_url, timeout=SERVER_HEALTH_TIMEOUT_SECONDS) as response:
@@ -340,12 +340,12 @@ class MainWindow(QMainWindow):
 
         QMessageBox.warning(self, "Настройки", "Соединение: ОШИБКА")
 
-    def build_health_url(self, api_hostname):
-        api_hostname = api_hostname.strip().rstrip("/")
-        if not re.match(r"^https?://", api_hostname):
-            api_hostname = f"http://{api_hostname}"
+    def build_health_url(self, api_url):
+        api_url = api_url.strip().rstrip("/")
+        if not re.match(r"^https?://", api_url):
+            api_url = f"http://{api_url}"
 
-        return f"{api_hostname}/api/v1/health"
+        return f"{api_url}/api/v1/health"
 
     def read_env_value(self, target_key):
         if not ENV_PATH.exists() or ENV_PATH.stat().st_size == 0:
