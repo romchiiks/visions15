@@ -22,6 +22,7 @@ DEFAULT_CAMERA_CONFIG = {
     "fps": 1,
     "width": 640,
     "height": 480,
+    "capture_interval": 1,
     "scan_warmup_seconds": 2.0,
     "scan_max_wait_seconds": 5.0,
 }
@@ -59,6 +60,7 @@ def _load_camera_config() -> dict:
         "fps": config.get("fps", DEFAULT_CAMERA_CONFIG["fps"]),
         "width": config.get("width", DEFAULT_CAMERA_CONFIG["width"]),
         "height": config.get("height", DEFAULT_CAMERA_CONFIG["height"]),
+        "capture_interval": config.get("capture_interval", DEFAULT_CAMERA_CONFIG["capture_interval"]),
         "scan_warmup_seconds": config.get(
             "scan_warmup_seconds",
             DEFAULT_CAMERA_CONFIG["scan_warmup_seconds"],
@@ -108,6 +110,7 @@ def get_camera_settings(
         "fps": _get_int_setting(settings, "fps"),
         "width": _get_int_setting(settings, "width"),
         "height": _get_int_setting(settings, "height"),
+        "capture_interval": _get_int_setting(settings, "capture_interval"),
         "scan_warmup_seconds": _get_float_setting(settings, "scan_warmup_seconds"),
         "scan_max_wait_seconds": _get_float_setting(settings, "scan_max_wait_seconds"),
     }
@@ -120,6 +123,8 @@ def get_camera_settings(
         raise ValueError("width в camera_config.json должен быть больше 0")
     if settings["height"] <= 0:
         raise ValueError("height в camera_config.json должен быть больше 0")
+    if settings["capture_interval"] <= 0:
+        raise ValueError("capture_interval в camera_config.json должен быть больше 0")
     if settings["scan_warmup_seconds"] < 0:
         raise ValueError("scan_warmup_seconds в camera_config.json должен быть больше или равен 0")
     if settings["scan_max_wait_seconds"] <= 0:
@@ -337,7 +342,7 @@ def save_camera_image_stream(
     camera, camera_settings = open_configured_camera(device_index=device_index, fps=fps)
 
     saved_paths: list[Path] = []
-    interval_seconds = 1 / camera_settings["fps"]
+    interval_seconds = camera_settings["capture_interval"]
     started_at = monotonic()
 
     try:

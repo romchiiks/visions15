@@ -378,6 +378,7 @@ class MainWindow(QMainWindow):
         labels = {
             "height": "Высота",
             "width": "Ширина",
+            "capture_interval": "Интервал записи",
             "fps": "FPS",
             "device_index": "Индекс устройства",
         }
@@ -393,6 +394,8 @@ class MainWindow(QMainWindow):
             raise ValueError("Высота должна быть больше 0")
         if settings["width"] <= 0:
             raise ValueError("Ширина должна быть больше 0")
+        if settings["capture_interval"] <= 0:
+            raise ValueError("Интервал записи должен быть больше 0")
         if settings["fps"] <= 0:
             raise ValueError("FPS должен быть больше 0")
         if settings["device_index"] < 0:
@@ -525,9 +528,10 @@ class MainWindow(QMainWindow):
                 return
 
             fps = self.dataset_camera_settings["fps"]
-            interval_ms = max(1, int(1000 / fps))
-            self.dataset_preview_timer.setInterval(interval_ms)
-            self.dataset_record_timer.setInterval(interval_ms)
+            preview_interval_ms = max(1, int(1000 / fps))
+            record_interval_ms = self.dataset_camera_settings["capture_interval"] * 1000
+            self.dataset_preview_timer.setInterval(preview_interval_ms)
+            self.dataset_record_timer.setInterval(record_interval_ms)
 
             if not self.dataset_camera.isOpened():
                 device_index = self.dataset_camera_settings["device_index"]
