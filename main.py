@@ -2,6 +2,7 @@ import json
 import random
 import re
 import sys
+import tarfile
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -25,6 +26,7 @@ from screens import (
 from screens.common import LoadingDialog
 from services.camera_service import (
     CAMERA_CONFIG_PATH,
+    DATASET_DIR,
     DATASET_METADATA_PATH,
     DEFAULT_CAMERA_CONFIG,
     count_dataset_images,
@@ -153,7 +155,7 @@ class MainWindow(QMainWindow):
         self.add_detail_screen.add_detail_requested.connect(self.add_detail_class)
 
         self.upload_screen.back_requested.connect(self.open_home_screen)
-        self.upload_screen.upload_requested.connect(self.show_selected_upload_classes)
+        self.upload_screen.upload_requested.connect(self.upload_selected_classes)
 
         self.dataset_camera_screen.back_requested.connect(self.cancel_dataset_detail)
         self.dataset_camera_screen.snapshot_requested.connect(self.take_dataset_snapshot)
@@ -221,14 +223,40 @@ class MainWindow(QMainWindow):
             if isinstance(class_data, dict)
         }
 
-    def show_selected_upload_classes(self):
+    def upload_selected_classes(self):
         selected_classes = self.upload_screen.selected_classes()
-        if selected_classes:
-            message = "\n".join(selected_classes)
-        else:
-            message = "Классы не выбраны"
+        if not selected_classes:
+            QMessageBox.information(self, "Выгрузка", "Классы не выбраны")
+            return
+
+        try:
+            archive_paths = self.run_blocking_with_loading(
+                "Выгрузка",
+                lambda: self.create_class_archives(selected_classes),
+            )
+        except (OSError, ValueError, tarfile.TarError) as error:
+            QMessageBox.warning(self, "Выгрузка", str(error))
+            return
+
+        message = "Созданы архивы:\n" + "\n".join(str(path) for path in archive_paths)
 
         QMessageBox.information(self, "Выгрузка", message)
+
+    def create_class_archives(self, class_names):
+        archive_paths = []
+        for class_name in class_names:
+            class_name = validate_class_name(class_name)
+            class_dir = DATASET_DIR / class_name
+            if not class_dir.is_dir():
+                raise FileNotFoundError(f"Папка класса не найдена: {class_dir}")
+
+            archive_path = DATASET_DIR / f"{class_name}.tar.gz"
+            with tarfile.open(archive_path, "w:gz") as archive:
+                archive.add(class_dir, arcname=class_name)
+
+            archive_paths.append(archive_path)
+
+        return archive_paths
 
     def reset_dataset_detail_state(self):
         self.active_dataset_class_name = None
