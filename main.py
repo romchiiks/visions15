@@ -278,6 +278,7 @@ class MainWindow(QMainWindow):
     def open_settings_screen(self):
         self.stop_dataset_camera()
         self.stop_settings_camera()
+        self.load_server_settings()
         self.load_camera_settings()
         self.stack.setCurrentWidget(self.settings_screen)
 
@@ -380,6 +381,15 @@ class MainWindow(QMainWindow):
     def are_unload_times_valid(self, unload_times):
         time_pattern = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
         return all(time_pattern.fullmatch(unload_time) for unload_time in unload_times)
+
+    def load_server_settings(self):
+        self.settings_screen.set_server_settings(
+            {
+                "api_key": self.read_env_value("API_KEY") or "",
+                "unload_time_1": self.read_env_value("UNLOAD_TIME_1") or "",
+                "unload_time_2": self.read_env_value("UNLOAD_TIME_2") or "",
+            }
+        )
 
     def load_camera_settings(self):
         camera_config = self.read_camera_config()

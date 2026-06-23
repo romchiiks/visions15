@@ -131,6 +131,11 @@ class SettingsScreen(QWidget):
             self.second_unload_time_input.text().strip(),
         ]
 
+    def set_server_settings(self, settings):
+        self.api_key_input.setText(settings.get("api_key", ""))
+        self.first_unload_time_input.setText(settings.get("unload_time_1", ""))
+        self.second_unload_time_input.setText(settings.get("unload_time_2", ""))
+
     def set_camera_settings(self, settings):
         self.camera_height_input.setText(str(settings["height"]))
         self.camera_width_input.setText(str(settings["width"]))
