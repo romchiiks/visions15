@@ -20,10 +20,12 @@ from screens import (
     ScanScreen,
     SettingsCameraScreen,
     SettingsScreen,
+    UploadScreen,
 )
 from screens.common import LoadingDialog
 from services.camera_service import (
     CAMERA_CONFIG_PATH,
+    DATASET_METADATA_PATH,
     DEFAULT_CAMERA_CONFIG,
     count_dataset_images,
     open_configured_camera,
@@ -93,6 +95,7 @@ class MainWindow(QMainWindow):
         self.scan_screen = ScanScreen(self.buttons_config)
         self.image_screen = ImageScreen(self.buttons_config)
         self.add_detail_screen = AddDetailScreen(self.buttons_config)
+        self.upload_screen = UploadScreen(self.buttons_config)
         self.dataset_camera_screen = DatasetCameraScreen(self.buttons_config)
         self.settings_screen = SettingsScreen(self.buttons_config)
         self.settings_camera_screen = SettingsCameraScreen(self.buttons_config)
@@ -101,6 +104,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.scan_screen)
         self.stack.addWidget(self.image_screen)
         self.stack.addWidget(self.add_detail_screen)
+        self.stack.addWidget(self.upload_screen)
         self.stack.addWidget(self.dataset_camera_screen)
         self.stack.addWidget(self.settings_screen)
         self.stack.addWidget(self.settings_camera_screen)
@@ -136,6 +140,7 @@ class MainWindow(QMainWindow):
     def connect_screen_signals(self):
         self.home_screen.scan_requested.connect(self.open_scan_screen)
         self.home_screen.add_detail_requested.connect(self.open_add_detail_screen)
+        self.home_screen.upload_requested.connect(self.open_upload_screen)
         self.home_screen.settings_requested.connect(self.open_settings_screen)
 
         self.scan_screen.back_requested.connect(self.open_home_screen)
@@ -146,6 +151,9 @@ class MainWindow(QMainWindow):
 
         self.add_detail_screen.back_requested.connect(self.open_home_screen)
         self.add_detail_screen.add_detail_requested.connect(self.add_detail_class)
+
+        self.upload_screen.back_requested.connect(self.open_home_screen)
+        self.upload_screen.upload_requested.connect(self.show_selected_upload_classes)
 
         self.dataset_camera_screen.back_requested.connect(self.cancel_dataset_detail)
         self.dataset_camera_screen.snapshot_requested.connect(self.take_dataset_snapshot)
@@ -183,6 +191,44 @@ class MainWindow(QMainWindow):
         self.stop_dataset_camera()
         self.load_details()
         self.stack.setCurrentWidget(self.add_detail_screen)
+
+    def open_upload_screen(self):
+        self.stop_dataset_camera()
+        self.stop_settings_camera()
+        self.load_upload_classes()
+        self.stack.setCurrentWidget(self.upload_screen)
+
+    def load_upload_classes(self):
+        self.upload_screen.show_classes(self.read_upload_classes())
+
+    def read_upload_classes(self):
+        if not DATASET_METADATA_PATH.exists() or DATASET_METADATA_PATH.stat().st_size == 0:
+            return {}
+
+        try:
+            with DATASET_METADATA_PATH.open("r", encoding="utf-8") as file:
+                metadata = json.load(file)
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+        classes = metadata.get("classes", {})
+        if not isinstance(classes, dict):
+            return {}
+
+        return {
+            str(class_name): class_data
+            for class_name, class_data in classes.items()
+            if isinstance(class_data, dict)
+        }
+
+    def show_selected_upload_classes(self):
+        selected_classes = self.upload_screen.selected_classes()
+        if selected_classes:
+            message = "\n".join(selected_classes)
+        else:
+            message = "Классы не выбраны"
+
+        QMessageBox.information(self, "Выгрузка", message)
 
     def reset_dataset_detail_state(self):
         self.active_dataset_class_name = None
