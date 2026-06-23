@@ -1,6 +1,8 @@
+import io
 import json
 import re
 import tarfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
@@ -23,14 +25,101 @@ class UploadRequestError(RuntimeError):
     pass
 
 
+@dataclass(frozen=True)
+class DatasetUpdateArchive:
+    path: Path
+    metadata: dict
+
+
+def upload_selected_classes(
+    class_names: Iterable[str],
+    dataset_dir: Path | str = DEFAULT_DATASET_DIR,
+    env_path: Path | str = DEFAULT_ENV_PATH,
+    timeout_seconds: int = UPLOAD_REQUEST_TIMEOUT_SECONDS,
+) -> tuple[list[Path], requests.Response]:
+    archive = create_dataset_update_archive_result(
+        class_names,
+        dataset_dir=dataset_dir,
+    )
+    response = upload_project(
+        archive.metadata,
+        env_path=env_path,
+        timeout_seconds=timeout_seconds,
+    )
+
+    return [archive.path], response
+
+
 def create_class_archives(
     class_names: Iterable[str],
     dataset_dir: Path | str = DEFAULT_DATASET_DIR,
 ) -> list[Path]:
-    return [
-        create_class_archive(class_name, dataset_dir=dataset_dir)
-        for class_name in class_names
+    return [create_dataset_update_archive(class_names, dataset_dir=dataset_dir)]
+
+
+def create_dataset_update_archive(
+    class_names: Iterable[str],
+    dataset_dir: Path | str = DEFAULT_DATASET_DIR,
+) -> Path:
+    return create_dataset_update_archive_result(
+        class_names,
+        dataset_dir=dataset_dir,
+    ).path
+
+
+def create_dataset_update_archive_result(
+    class_names: Iterable[str],
+    dataset_dir: Path | str = DEFAULT_DATASET_DIR,
+) -> DatasetUpdateArchive:
+    dataset_dir = Path(dataset_dir).resolve()
+    metadata_path = dataset_dir / "metadata.json"
+    metadata = read_metadata(metadata_path)
+    dataset_update_name = validate_dataset_update_name(read_dataset_project_name(metadata))
+    selected_class_names = unique_class_names(class_names)
+    if not selected_class_names:
+        raise ValueError("Классы не выбраны")
+
+    metadata_classes = read_metadata_classes(metadata)
+    missing_class_names = [
+        class_name
+        for class_name in selected_class_names
+        if class_name not in metadata_classes
     ]
+    if missing_class_names:
+        raise ValueError(
+            "metadata.json: классы не найдены: "
+            + ", ".join(missing_class_names)
+        )
+
+    class_dirs = []
+    for class_name in selected_class_names:
+        class_dir = resolve_class_dir(dataset_dir, class_name)
+        if not class_dir.is_dir():
+            raise FileNotFoundError(f"Папка класса не найдена: {class_dir}")
+        class_dirs.append((class_name, class_dir))
+
+    archive_path = dataset_dir / f"{dataset_update_name}.tar.gz"
+    archive_metadata = metadata_with_classes(metadata, selected_class_names)
+    remaining_metadata = metadata_without_classes(metadata, selected_class_names)
+
+    try:
+        with tarfile.open(archive_path, "w:gz") as archive:
+            add_metadata_to_archive(
+                archive,
+                archive_metadata,
+                f"{dataset_update_name}/metadata.json",
+            )
+            for class_name, class_dir in class_dirs:
+                archive.add(class_dir, arcname=f"{dataset_update_name}/{class_name}")
+    except tarfile.TarError as error:
+        raise UploadArchiveError(f"Не удалось создать архив {archive_path}") from error
+
+    write_metadata(metadata_path, remaining_metadata)
+
+    return DatasetUpdateArchive(
+        path=archive_path,
+        metadata=archive_metadata,
+    )
 
 
 def create_class_archive(
@@ -58,8 +147,23 @@ def upload_project_from_metadata(
     metadata_path: Path | str = DEFAULT_METADATA_PATH,
     env_path: Path | str = DEFAULT_ENV_PATH,
     timeout_seconds: int = UPLOAD_REQUEST_TIMEOUT_SECONDS,
+    class_names: Iterable[str] | None = None,
 ) -> requests.Response:
     metadata = read_metadata(metadata_path)
+    return upload_project(
+        metadata,
+        env_path=env_path,
+        timeout_seconds=timeout_seconds,
+        class_names=class_names,
+    )
+
+
+def upload_project(
+    metadata: dict,
+    env_path: Path | str = DEFAULT_ENV_PATH,
+    timeout_seconds: int = UPLOAD_REQUEST_TIMEOUT_SECONDS,
+    class_names: Iterable[str] | None = None,
+) -> requests.Response:
     api_url = read_env_value("API_URL", env_path)
     api_key = read_env_value("API_KEY", env_path)
     if not api_url:
@@ -69,7 +173,7 @@ def upload_project_from_metadata(
 
     payload = {
         "project_name": read_dataset_project_name(metadata),
-        "classes": read_metadata_class_names(metadata),
+        "classes": read_project_class_names(metadata, class_names),
     }
 
     try:
@@ -103,6 +207,13 @@ def read_metadata(metadata_path: Path | str) -> dict:
     return metadata
 
 
+def write_metadata(metadata_path: Path | str, metadata: dict) -> None:
+    metadata_path = Path(metadata_path)
+    with metadata_path.open("w", encoding="utf-8") as metadata_file:
+        json.dump(metadata, metadata_file, ensure_ascii=False, indent=2)
+        metadata_file.write("\n")
+
+
 def read_dataset_project_name(metadata: dict) -> str:
     dataset_update = metadata.get("dataset_update", {})
     if not isinstance(dataset_update, dict):
@@ -116,15 +227,77 @@ def read_dataset_project_name(metadata: dict) -> str:
 
 
 def read_metadata_class_names(metadata: dict) -> list[str]:
-    classes = metadata.get("classes", {})
-    if not isinstance(classes, dict):
-        raise ValueError("metadata.json: classes должен быть объектом")
-
+    classes = read_metadata_classes(metadata)
     class_names = [str(class_name) for class_name in classes.keys()]
     if not class_names:
         raise ValueError("metadata.json: classes пустой")
 
     return class_names
+
+
+def read_project_class_names(
+    metadata: dict,
+    class_names: Iterable[str] | None = None,
+) -> list[str]:
+    metadata_class_names = read_metadata_class_names(metadata)
+    if class_names is None:
+        return metadata_class_names
+
+    metadata_class_names_set = set(metadata_class_names)
+    project_class_names = [
+        class_name
+        for class_name in unique_class_names(class_names)
+        if class_name in metadata_class_names_set
+    ]
+    if not project_class_names:
+        raise ValueError("metadata.json: выбранные классы отсутствуют в classes")
+
+    return project_class_names
+
+
+def read_metadata_classes(metadata: dict) -> dict:
+    classes = metadata.get("classes", {})
+    if not isinstance(classes, dict):
+        raise ValueError("metadata.json: classes должен быть объектом")
+
+    return classes
+
+
+def metadata_with_classes(metadata: dict, class_names: Iterable[str]) -> dict:
+    classes = read_metadata_classes(metadata)
+    return {
+        **metadata,
+        "classes": {
+            class_name: classes[class_name]
+            for class_name in class_names
+        },
+    }
+
+
+def metadata_without_classes(metadata: dict, class_names: Iterable[str]) -> dict:
+    classes = read_metadata_classes(metadata)
+    excluded_class_names = set(class_names)
+    return {
+        **metadata,
+        "classes": {
+            class_name: class_data
+            for class_name, class_data in classes.items()
+            if class_name not in excluded_class_names
+        },
+    }
+
+
+def add_metadata_to_archive(
+    archive: tarfile.TarFile,
+    metadata: dict,
+    arcname: str,
+) -> None:
+    metadata_bytes = (
+        json.dumps(metadata, ensure_ascii=False, indent=2) + "\n"
+    ).encode("utf-8")
+    tar_info = tarfile.TarInfo(arcname)
+    tar_info.size = len(metadata_bytes)
+    archive.addfile(tar_info, io.BytesIO(metadata_bytes))
 
 
 def build_projects_url(api_url: str) -> str:
@@ -175,6 +348,31 @@ def validate_class_name(class_name: str) -> str:
         raise ValueError('Название класса не должно содержать символы <>:"/\\|?*')
 
     return class_name
+
+
+def unique_class_names(class_names: Iterable[str]) -> list[str]:
+    unique_names = []
+    seen_names = set()
+    for class_name in class_names:
+        class_name = validate_class_name(class_name)
+        if class_name in seen_names:
+            continue
+        unique_names.append(class_name)
+        seen_names.add(class_name)
+
+    return unique_names
+
+
+def validate_dataset_update_name(dataset_update_name: str) -> str:
+    dataset_update_name = str(dataset_update_name).strip()
+    if not dataset_update_name:
+        raise ValueError("metadata.json: dataset_update.name не заполнен")
+    if dataset_update_name in {".", ".."}:
+        raise ValueError("metadata.json: dataset_update.name некорректен")
+    if INVALID_CLASS_NAME_PATTERN.search(dataset_update_name):
+        raise ValueError('metadata.json: dataset_update.name не должен содержать символы <>:"/\\|?*')
+
+    return dataset_update_name
 
 
 def resolve_class_dir(dataset_dir: Path, class_name: str) -> Path:

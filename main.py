@@ -42,8 +42,7 @@ from services.perspective_warp_service import (
 from services.upload_service import (
     UploadArchiveError,
     UploadRequestError,
-    create_class_archives,
-    upload_project_from_metadata,
+    upload_selected_classes,
 )
 
 
@@ -242,8 +241,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Выгрузка", str(error))
             return
 
+        archive_message_title = "Создан архив" if len(archive_paths) == 1 else "Созданы архивы"
         message = (
-            "Созданы архивы:\n"
+            f"{archive_message_title}:\n"
             + "\n".join(str(path) for path in archive_paths)
             + f"\n\nПроект отправлен. Код ответа: {response_status_code}"
         )
@@ -251,8 +251,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Выгрузка", message)
 
     def upload_selected_classes_data(self, selected_classes):
-        archive_paths = create_class_archives(selected_classes)
-        response = upload_project_from_metadata()
+        archive_paths, response = upload_selected_classes(selected_classes)
         return archive_paths, response.status_code
 
     def reset_dataset_detail_state(self):
