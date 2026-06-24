@@ -49,12 +49,7 @@ def upload_selected_classes(
         backup_dataset_dir=backup_dataset_dir,
         finalize_dataset=False,
     )
-    response = upload_project(
-        archive.metadata,
-        env_path=env_path,
-        timeout_seconds=timeout_seconds,
-    )
-    upload_archive(
+    response = upload_archive(
         archive.path,
         env_path=env_path,
         timeout_seconds=timeout_seconds,
