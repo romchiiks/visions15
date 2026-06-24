@@ -347,7 +347,7 @@ class MainWindow(QMainWindow):
         if not re.match(r"^https?://", api_url):
             api_url = f"http://{api_url}"
 
-        return f"{api_url}/api/v1/health"
+        return f"{api_url}/health"
 
     def read_env_value(self, target_key):
         if not ENV_PATH.exists() or ENV_PATH.stat().st_size == 0:
