@@ -75,8 +75,10 @@ class SettingsScreen(QWidget):
 
         server_actions = QHBoxLayout()
         self.settings_check_connection_button = create_button(buttons_config, "settings_check_connection_button")
+        self.settings_update_model_button = create_button(buttons_config, "settings_update_model_button")
         self.settings_check_connection_button.clicked.connect(self.check_connection_requested.emit)
         server_actions.addWidget(self.settings_check_connection_button)
+        server_actions.addWidget(self.settings_update_model_button)
         server_actions.addStretch()
         server_layout.addLayout(server_actions)
 

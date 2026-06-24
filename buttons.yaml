@@ -62,6 +62,10 @@ settings_check_connection_button:
   button_text: "Проверить соединение"
   button_file: "screens/settings_screen.py"
 
+settings_update_model_button:
+  button_text: "Обновить модель"
+  button_file: "screens/settings_screen.py"
+
 settings_camera_button:
   button_text: "Вывод с камеры"
   button_file: "screens/settings_screen.py"
