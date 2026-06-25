@@ -6,8 +6,10 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event, Lock, Thread
 from time import monotonic, sleep
 
+import cv2
 import yaml
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QInputDialog, QMainWindow, QMessageBox, QStackedWidget
@@ -30,6 +32,7 @@ from services.camera_service import (
     DEFAULT_CAMERA_CONFIG,
     count_dataset_images,
     open_configured_camera,
+    release_camera,
     remove_empty_dataset_class_dir,
     save_camera_image,
     save_frame_image,
@@ -39,7 +42,6 @@ from services.camera_service import (
 from services.model_service import ModelUpdateError, update_model_files
 from services.perspective_warp_service import (
     detect_aruco_marker_rectangle,
-    draw_aruco_marker_rectangle,
 )
 from services.upload_service import (
     UploadArchiveError,
@@ -53,6 +55,7 @@ BUTTONS_PATH = BASE_DIR / "buttons.yaml"
 DETAILS_PATH = BASE_DIR / "details.json"
 ENV_PATH = BASE_DIR / ".env"
 SERVER_HEALTH_TIMEOUT_SECONDS = 5
+DATASET_MARKER_DETECTION_INTERVAL_SECONDS = 1.0
 
 
 def load_buttons_config():
@@ -74,14 +77,24 @@ class MainWindow(QMainWindow):
         self.dataset_camera = None
         self.dataset_camera_settings = None
         self.dataset_current_frame = None
+        self.dataset_frame_lock = Lock()
+        self.dataset_capture_stop = None
+        self.dataset_capture_thread = None
         self.dataset_marker_rectangle = None
+        self.dataset_marker_future = None
+        self.dataset_marker_detection_started_at = 0.0
         self.dataset_pending_frames = []
         self.dataset_saved_images_count = 0
         self.dataset_recording = False
         self.settings_camera = None
         self.settings_camera_settings = None
+        self.settings_current_frame = None
+        self.settings_frame_lock = Lock()
+        self.settings_capture_stop = None
+        self.settings_capture_thread = None
         self.loading_dialog = LoadingDialog(self)
         self.loading_executor = ThreadPoolExecutor(max_workers=1)
+        self.dataset_marker_executor = ThreadPoolExecutor(max_workers=1)
 
         self.stack = QStackedWidget()
         self.setCentralWidget(self.stack)
@@ -730,7 +743,7 @@ class MainWindow(QMainWindow):
 
             if not self.dataset_camera.isOpened():
                 device_index = self.dataset_camera_settings["device_index"]
-                self.dataset_camera.release()
+                release_camera(self.dataset_camera)
                 self.dataset_camera = None
                 self.dataset_camera_settings = None
                 self.dataset_camera_screen.show_message("Камера не найдена")
@@ -738,12 +751,9 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Камера", f"Не удалось открыть камеру с index device = {device_index}")
                 return
 
-            self.loading_dialog.label.setText("Определение рабочей области")
-            self.process_loading_events()
-            if not self.detect_dataset_marker_rectangle_on_start():
-                return
-
+            self.start_dataset_capture_thread()
             self.dataset_preview_timer.start()
+            QTimer.singleShot(0, self.refresh_dataset_camera_frame)
         finally:
             self.hide_loading()
 
@@ -752,108 +762,159 @@ class MainWindow(QMainWindow):
         self.dataset_record_timer.stop()
         self.dataset_recording = False
         self.dataset_camera_screen.set_recording(False)
+        self.stop_dataset_capture_thread()
 
         if self.dataset_camera is not None:
-            self.dataset_camera.release()
+            release_camera(self.dataset_camera)
             self.dataset_camera = None
 
+        if self.dataset_marker_future is not None:
+            self.dataset_marker_future.cancel()
+
         self.dataset_camera_settings = None
-        self.dataset_current_frame = None
+        with self.dataset_frame_lock:
+            self.dataset_current_frame = None
         self.dataset_marker_rectangle = None
+        self.dataset_marker_future = None
+        self.dataset_marker_detection_started_at = 0.0
+
+    def start_dataset_capture_thread(self):
+        self.stop_dataset_capture_thread()
+        self.dataset_capture_stop = Event()
+        self.dataset_capture_thread = Thread(
+            target=self.capture_dataset_frames,
+            daemon=True,
+        )
+        self.dataset_capture_thread.start()
+
+    def stop_dataset_capture_thread(self):
+        if self.dataset_capture_stop is not None:
+            self.dataset_capture_stop.set()
+
+        if self.dataset_capture_thread is not None:
+            self.dataset_capture_thread.join(timeout=1.0)
+
+        self.dataset_capture_stop = None
+        self.dataset_capture_thread = None
+
+    def capture_dataset_frames(self):
+        while self.dataset_capture_stop is not None and not self.dataset_capture_stop.is_set():
+            if self.dataset_camera is None:
+                break
+
+            success, frame = self.dataset_camera.read()
+            if not success:
+                sleep(0.05)
+                continue
+
+            with self.dataset_frame_lock:
+                self.dataset_current_frame = frame
+
+    def latest_dataset_frame(self):
+        with self.dataset_frame_lock:
+            return self.dataset_current_frame
+
+    def is_dataset_frame_resolution_valid(self, frame):
+        if self.dataset_camera_settings is None:
+            return True
+
+        target_width = self.dataset_camera_settings["width"]
+        target_height = self.dataset_camera_settings["height"]
+        actual_height, actual_width = frame.shape[:2]
+        if actual_width == target_width and actual_height == target_height:
+            return True
+
+        QMessageBox.warning(
+            self,
+            "Камера",
+            (
+                "Фактическое разрешение камеры не совпадает с настройками.\n"
+                f"В настройках: {target_width}x{target_height}\n"
+                f"Камера отдает: {actual_width}x{actual_height}\n\n"
+                "Изображение не сохранено."
+            ),
+        )
+        return False
+
+    def dataset_storage_frame(self, frame):
+        if self.dataset_camera_settings is None:
+            return frame.copy()
+
+        target_width = self.dataset_camera_settings["width"]
+        target_height = self.dataset_camera_settings["height"]
+        height, width = frame.shape[:2]
+        if width == target_width and height == target_height:
+            return frame.copy()
+
+        return cv2.resize(
+            frame,
+            (target_width, target_height),
+            interpolation=cv2.INTER_AREA,
+        )
 
     def update_dataset_images_count(self):
         self.dataset_camera_screen.set_images_count(
             self.dataset_saved_images_count + len(self.dataset_pending_frames)
         )
 
-    def detect_dataset_marker_rectangle_on_start(self):
-        while self.dataset_camera is not None:
-            frame = self.read_dataset_warmup_frame()
-            if frame is None:
-                return False
-
-            try:
-                self.dataset_marker_rectangle = detect_aruco_marker_rectangle(frame)
-            except RuntimeError:
-                self.dataset_marker_rectangle = None
-                self.dataset_camera_screen.show_frame(frame)
-                self.hide_loading()
-                should_retry = self.should_retry_dataset_marker_detection()
-                if should_retry:
-                    self.show_loading("Определение рабочей области")
-                    continue
-
-                self.cancel_dataset_detail()
-                return False
-
-            self.show_dataset_frame(frame)
-            return True
-
-        return False
-
-    def read_dataset_warmup_frame(self):
-        warmup_seconds = self.dataset_camera_settings["scan_warmup_seconds"]
-        started_at = monotonic()
-        last_frame = None
-
-        while self.dataset_camera is not None:
-            success, frame = self.dataset_camera.read()
-            if not success:
-                self.dataset_camera_screen.show_message("Не удалось получить кадр")
-                return None
-
-            last_frame = frame
-            self.dataset_current_frame = frame
-            if monotonic() - started_at >= warmup_seconds:
-                return last_frame
-
-            self.process_loading_events()
-            sleep(0.05)
-
-        return None
-
-    def should_retry_dataset_marker_detection(self):
-        message_box = QMessageBox(self)
-        message_box.setWindowTitle("Рабочая область")
-        message_box.setText("Рабочая область не определена")
-        retry_button = message_box.addButton("Попробовать снова", QMessageBox.AcceptRole)
-        message_box.addButton("Отмена", QMessageBox.RejectRole)
-        message_box.setDefaultButton(retry_button)
-        message_box.exec()
-
-        return message_box.clickedButton() == retry_button
-
     def refresh_dataset_camera_frame(self):
         if self.dataset_camera is None:
             return
 
-        success, frame = self.dataset_camera.read()
-        if not success:
-            self.dataset_camera_screen.show_message("Не удалось получить кадр")
+        frame = self.latest_dataset_frame()
+        if frame is None:
             return
 
-        self.dataset_current_frame = frame
+        self.update_dataset_marker_detection(frame)
         self.show_dataset_frame(frame)
 
-    def show_dataset_frame(self, frame):
-        if self.dataset_marker_rectangle is None:
-            self.dataset_camera_screen.show_frame(frame)
+    def update_dataset_marker_detection(self, frame):
+        if self.dataset_marker_rectangle is not None:
             return
 
+        if self.dataset_marker_future is not None:
+            if not self.dataset_marker_future.done():
+                return
+
+            try:
+                self.dataset_marker_rectangle = self.dataset_marker_future.result()
+            except Exception:
+                pass
+            finally:
+                self.dataset_marker_future = None
+
+            if self.dataset_marker_rectangle is not None:
+                return
+
+        current_time = monotonic()
+        if current_time - self.dataset_marker_detection_started_at < DATASET_MARKER_DETECTION_INTERVAL_SECONDS:
+            return
+
+        self.dataset_marker_detection_started_at = current_time
+        self.dataset_marker_future = self.dataset_marker_executor.submit(
+            detect_aruco_marker_rectangle,
+            frame.copy(),
+        )
+
+    def show_dataset_frame(self, frame):
         self.dataset_camera_screen.show_frame(
-            draw_aruco_marker_rectangle(frame, self.dataset_marker_rectangle)
+            frame,
+            marker_rectangle=self.dataset_marker_rectangle,
         )
 
     def take_dataset_snapshot(self):
         if self.active_dataset_class_name is None:
             return
-        if self.dataset_current_frame is None:
+        if self.latest_dataset_frame() is None:
             self.refresh_dataset_camera_frame()
-        if self.dataset_current_frame is None:
+        frame = self.latest_dataset_frame()
+        if frame is None:
             QMessageBox.warning(self, "Камера", "Нет кадра для сохранения")
             return
+        if not self.is_dataset_frame_resolution_valid(frame):
+            return
 
-        self.dataset_pending_frames.append(self.dataset_current_frame.copy())
+        self.dataset_pending_frames.append(self.dataset_storage_frame(frame))
         self.update_dataset_images_count()
 
     def toggle_dataset_recording(self):
@@ -866,8 +927,10 @@ class MainWindow(QMainWindow):
 
         if self.dataset_camera is None or self.active_dataset_class_name is None:
             return
+        frame = self.latest_dataset_frame()
+        if frame is not None and not self.is_dataset_frame_resolution_valid(frame):
+            return
 
-        self.dataset_preview_timer.stop()
         self.dataset_recording = True
         self.dataset_camera_screen.set_recording(True)
         self.record_dataset_frame()
@@ -877,15 +940,18 @@ class MainWindow(QMainWindow):
         if self.dataset_camera is None or self.active_dataset_class_name is None:
             return
 
-        success, frame = self.dataset_camera.read()
-        if not success:
+        frame = self.latest_dataset_frame()
+        if frame is None:
             QMessageBox.warning(self, "Камера", "Не удалось получить кадр для записи")
             self.toggle_dataset_recording()
             return
+        if not self.is_dataset_frame_resolution_valid(frame):
+            self.toggle_dataset_recording()
+            return
 
-        self.dataset_current_frame = frame
+        self.update_dataset_marker_detection(frame)
         self.show_dataset_frame(frame)
-        self.dataset_pending_frames.append(frame.copy())
+        self.dataset_pending_frames.append(self.dataset_storage_frame(frame))
         self.update_dataset_images_count()
 
     def save_dataset_images(self):
@@ -895,6 +961,9 @@ class MainWindow(QMainWindow):
             self.toggle_dataset_recording()
         if not self.dataset_pending_frames:
             QMessageBox.information(self, "Датасет", "Нет новых фотографий для сохранения")
+            return
+        frame = self.latest_dataset_frame()
+        if frame is not None and not self.is_dataset_frame_resolution_valid(frame):
             return
 
         class_name = self.active_dataset_class_name
@@ -962,32 +1031,71 @@ class MainWindow(QMainWindow):
 
         if not self.settings_camera.isOpened():
             device_index = self.settings_camera_settings["device_index"]
-            self.settings_camera.release()
+            release_camera(self.settings_camera)
             self.settings_camera = None
             self.settings_camera_settings = None
             self.settings_camera_screen.show_message("Камера не найдена")
             QMessageBox.warning(self, "Камера", f"Не удалось открыть камеру с index device = {device_index}")
             return
 
-        self.refresh_settings_camera_frame()
+        self.start_settings_capture_thread()
         self.settings_camera_timer.start()
+        QTimer.singleShot(0, self.refresh_settings_camera_frame)
 
     def stop_settings_camera(self):
         self.settings_camera_timer.stop()
+        self.stop_settings_capture_thread()
 
         if self.settings_camera is not None:
-            self.settings_camera.release()
+            release_camera(self.settings_camera)
             self.settings_camera = None
 
         self.settings_camera_settings = None
+        with self.settings_frame_lock:
+            self.settings_current_frame = None
+
+    def start_settings_capture_thread(self):
+        self.stop_settings_capture_thread()
+        self.settings_capture_stop = Event()
+        self.settings_capture_thread = Thread(
+            target=self.capture_settings_frames,
+            daemon=True,
+        )
+        self.settings_capture_thread.start()
+
+    def stop_settings_capture_thread(self):
+        if self.settings_capture_stop is not None:
+            self.settings_capture_stop.set()
+
+        if self.settings_capture_thread is not None:
+            self.settings_capture_thread.join(timeout=1.0)
+
+        self.settings_capture_stop = None
+        self.settings_capture_thread = None
+
+    def capture_settings_frames(self):
+        while self.settings_capture_stop is not None and not self.settings_capture_stop.is_set():
+            if self.settings_camera is None:
+                break
+
+            success, frame = self.settings_camera.read()
+            if not success:
+                sleep(0.05)
+                continue
+
+            with self.settings_frame_lock:
+                self.settings_current_frame = frame
+
+    def latest_settings_frame(self):
+        with self.settings_frame_lock:
+            return self.settings_current_frame
 
     def refresh_settings_camera_frame(self):
         if self.settings_camera is None:
             return
 
-        success, frame = self.settings_camera.read()
-        if not success:
-            self.settings_camera_screen.show_message("Не удалось получить кадр")
+        frame = self.latest_settings_frame()
+        if frame is None:
             return
 
         self.settings_camera_screen.show_frame(frame)
@@ -995,6 +1103,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         self.stop_dataset_camera()
         self.stop_settings_camera()
+        self.dataset_marker_executor.shutdown(wait=False, cancel_futures=True)
         self.loading_executor.shutdown(wait=False, cancel_futures=True)
         super().closeEvent(event)
 

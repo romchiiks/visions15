@@ -1,3 +1,5 @@
+from threading import Lock
+
 import cv2
 import numpy as np
 
@@ -6,12 +8,23 @@ OUTPUT_WIDTH = 1000
 OUTPUT_HEIGHT = 700
 REQUIRED_IDS = (0, 1, 2, 3)
 REQUIRED_IDS_SET = set(REQUIRED_IDS)
+DETECTION_WIDTH = 960
+DETECTION_HEIGHT = 540
+_DETECTOR = None
+_DETECTOR_LOCK = Lock()
 
 
 def _create_detector():
     aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
     detector_parameters = cv2.aruco.DetectorParameters()
     return cv2.aruco.ArucoDetector(aruco_dict, detector_parameters)
+
+
+def _get_detector():
+    global _DETECTOR
+    if _DETECTOR is None:
+        _DETECTOR = _create_detector()
+    return _DETECTOR
 
 
 def _detect_markers(image, detector):
@@ -46,16 +59,30 @@ def _build_src_points(corners, ids):
 
 
 def detect_aruco_marker_rectangle(image):
-    detector = _create_detector()
-    corners, ids = _detect_markers(image, detector)
+    detector = _get_detector()
+    with _DETECTOR_LOCK:
+        corners, ids = _detect_markers(image, detector)
     return _build_src_points(corners, ids)
 
 
-def draw_aruco_marker_rectangle(image, rectangle_points):
-    output_image = image.copy()
-    points = rectangle_points.astype(np.int32).reshape((-1, 1, 2))
-    cv2.polylines(output_image, [points], isClosed=True, color=(0, 255, 0), thickness=3)
-    return output_image
+def detect_aruco_marker_rectangle_preview(
+    image,
+    max_width: int = DETECTION_WIDTH,
+    max_height: int = DETECTION_HEIGHT,
+):
+    height, width = image.shape[:2]
+    scale = min(max_width / width, max_height / height, 1)
+    if scale == 1:
+        return detect_aruco_marker_rectangle(image)
+
+    preview_width = max(1, int(width * scale))
+    preview_height = max(1, int(height * scale))
+    preview_image = cv2.resize(
+        image,
+        (preview_width, preview_height),
+        interpolation=cv2.INTER_AREA,
+    )
+    return detect_aruco_marker_rectangle(preview_image) / scale
 
 
 def apply_perspective_warp(
