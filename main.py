@@ -8,7 +8,7 @@ from pathlib import Path
 
 import yaml
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QStackedWidget
+from PySide6.QtWidgets import QApplication, QInputDialog, QMainWindow, QMessageBox, QStackedWidget
 
 from screens import (
     AddDetailScreen,
@@ -104,6 +104,8 @@ class MainWindow(QMainWindow):
 
         self.add_detail_screen.back_requested.connect(self.open_home_screen)
         self.add_detail_screen.add_detail_requested.connect(self.add_detail_class)
+        self.add_detail_screen.edit_detail_requested.connect(self.edit_detail_class)
+        self.add_detail_screen.delete_detail_requested.connect(self.delete_detail_class)
 
         self.dataset_camera_screen.back_requested.connect(self.return_to_add_detail_screen)
         self.dataset_camera_screen.snapshot_requested.connect(self.take_dataset_snapshot)
@@ -344,6 +346,68 @@ class MainWindow(QMainWindow):
         self.add_detail_screen.clear_detail_input()
         self.load_details()
         self.open_dataset_camera_screen()
+
+    def edit_detail_class(self, current_class_name):
+        details = self.read_details()
+        if current_class_name not in details:
+            self.load_details()
+            return
+
+        new_class_name, accepted = QInputDialog.getText(
+            self,
+            "Редактирование детали",
+            "Название детали:",
+            text=current_class_name,
+        )
+        if not accepted:
+            return
+
+        try:
+            new_class_name = validate_class_name(new_class_name)
+        except ValueError as error:
+            QMessageBox.warning(self, "Редактирование детали", str(error))
+            return
+
+        if new_class_name == current_class_name:
+            return
+
+        if new_class_name in details:
+            QMessageBox.warning(self, "Редактирование детали", "Такая деталь уже существует")
+            return
+
+        renamed_details = {}
+        for class_name, article in details.items():
+            if class_name == current_class_name:
+                renamed_details[new_class_name] = article
+            else:
+                renamed_details[class_name] = article
+
+        self.write_details(renamed_details)
+        if self.active_dataset_class_name == current_class_name:
+            self.active_dataset_class_name = new_class_name
+        self.load_details()
+
+    def delete_detail_class(self, class_name):
+        details = self.read_details()
+        if class_name not in details:
+            self.load_details()
+            return
+
+        answer = QMessageBox.question(
+            self,
+            "Удаление детали",
+            f'Удалить деталь "{class_name}"?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        del details[class_name]
+        self.write_details(details)
+        if self.active_dataset_class_name == class_name:
+            self.active_dataset_class_name = None
+        self.load_details()
 
     def scan_camera_image(self):
         try:
