@@ -1,12 +1,9 @@
 import json
 import random
 import re
-import shutil
 import sys
-import tempfile
 import urllib.error
 import urllib.request
-import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from time import monotonic, sleep
@@ -38,6 +35,7 @@ from services.camera_service import (
     validate_class_name,
     write_dataset_metadata,
 )
+from services.model_service import ModelUpdateError, update_model_files
 from services.perspective_warp_service import (
     detect_aruco_marker_rectangle,
     draw_aruco_marker_rectangle,
@@ -53,13 +51,7 @@ BASE_DIR = Path(__file__).resolve().parent
 BUTTONS_PATH = BASE_DIR / "buttons.yaml"
 DETAILS_PATH = BASE_DIR / "details.json"
 ENV_PATH = BASE_DIR / ".env"
-MODEL_DIR = BASE_DIR / "model"
-MODEL_MANIFEST_PATH = MODEL_DIR / "manifest.json"
-MODEL_WEIGHTS_PATH = MODEL_DIR / "model.pt"
-MODEL_LATEST_ARCHIVE_PATH = MODEL_DIR / "model-latest.zip"
 SERVER_HEALTH_TIMEOUT_SECONDS = 5
-MODEL_MANIFEST_TIMEOUT_SECONDS = 30
-MODEL_DOWNLOAD_TIMEOUT_SECONDS = 120
 
 
 def load_buttons_config():
@@ -363,122 +355,32 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            message = self.run_blocking_with_loading(
+            result = self.run_blocking_with_loading(
                 "Обновление модели",
-                lambda: self.update_model_files(api_url, api_key),
+                lambda: update_model_files(api_url, api_key),
             )
-        except (
-            TimeoutError,
-            OSError,
-            UnicodeDecodeError,
-            ValueError,
-            urllib.error.URLError,
-            json.JSONDecodeError,
-            zipfile.BadZipFile,
-        ) as error:
+        except (ModelUpdateError, OSError, ValueError, json.JSONDecodeError) as error:
             QMessageBox.warning(self, "Обновление модели", str(error))
             return
 
-        QMessageBox.information(self, "Обновление модели", message)
+        QMessageBox.information(self, "Обновление модели", self.format_model_update_result(result))
 
-    def update_model_files(self, api_url, api_key):
-        MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    def format_model_update_result(self, result):
+        if result.status == "downloaded":
+            return f"Модель загружена.\nВерсия: {result.version}"
+        if result.status == "recovered":
+            return f"Локальный manifest.json некорректен.\nМодель загружена.\nВерсия: {result.version}"
+        if result.status == "current":
+            return f"Модель актуальна.\nВерсия: {result.version}"
+        if result.status == "updated":
+            return (
+                "Модель обновлена.\n"
+                f"Локальная версия: {result.local_version}\n"
+                f"Удаленная версия: {result.remote_version}\n"
+                f"Установленная версия: {result.version}"
+            )
 
-        if not self.has_local_model_files():
-            version = self.download_and_extract_latest_model(api_url, api_key)
-            return f"Модель загружена.\nВерсия: {version}"
-
-        try:
-            local_manifest = self.read_json_file(MODEL_MANIFEST_PATH)
-            local_version = self.read_manifest_version(local_manifest, "local manifest.json")
-        except (OSError, json.JSONDecodeError, ValueError):
-            version = self.download_and_extract_latest_model(api_url, api_key)
-            return f"Локальный manifest.json некорректен.\nМодель загружена.\nВерсия: {version}"
-
-        remote_manifest = self.request_model_manifest(api_url, api_key)
-        remote_version = self.read_manifest_version(remote_manifest, "remote manifest.json")
-
-        if local_version == remote_version:
-            return f"Модель актуальна.\nВерсия: {local_version}"
-
-        version = self.download_and_extract_latest_model(api_url, api_key)
-        return (
-            "Модель обновлена.\n"
-            f"Локальная версия: {local_version}\n"
-            f"Удаленная версия: {remote_version}\n"
-            f"Установленная версия: {version}"
-        )
-
-    def has_local_model_files(self):
-        return MODEL_MANIFEST_PATH.is_file() and MODEL_WEIGHTS_PATH.is_file()
-
-    def request_model_manifest(self, api_url, api_key):
-        request = urllib.request.Request(
-            self.build_model_manifest_url(api_url),
-            headers={"X-API-Key": api_key},
-        )
-        with urllib.request.urlopen(request, timeout=MODEL_MANIFEST_TIMEOUT_SECONDS) as response:
-            return json.loads(response.read().decode("utf-8"))
-
-    def download_and_extract_latest_model(self, api_url, api_key):
-        self.download_latest_model_archive(api_url, api_key)
-        self.extract_model_archive(MODEL_LATEST_ARCHIVE_PATH)
-        manifest = self.read_json_file(MODEL_MANIFEST_PATH)
-        return self.read_manifest_version(manifest, "manifest.json")
-
-    def download_latest_model_archive(self, api_url, api_key):
-        request = urllib.request.Request(
-            self.build_model_latest_url(api_url),
-            headers={"X-API-Key": api_key},
-        )
-        with urllib.request.urlopen(request, timeout=MODEL_DOWNLOAD_TIMEOUT_SECONDS) as response:
-            with MODEL_LATEST_ARCHIVE_PATH.open("wb") as archive_file:
-                shutil.copyfileobj(response, archive_file)
-
-    def extract_model_archive(self, archive_path):
-        with zipfile.ZipFile(archive_path) as archive:
-            manifest_member = self.find_zip_member(archive, "manifest.json")
-            model_member = self.find_zip_member(archive, "model.pt")
-
-            with tempfile.TemporaryDirectory(dir=MODEL_DIR) as temp_dir:
-                temp_dir = Path(temp_dir)
-                temp_manifest_path = temp_dir / "manifest.json"
-                temp_model_path = temp_dir / "model.pt"
-
-                self.write_zip_member(archive, manifest_member, temp_manifest_path)
-                self.write_zip_member(archive, model_member, temp_model_path)
-
-                temp_manifest_path.replace(MODEL_MANIFEST_PATH)
-                temp_model_path.replace(MODEL_WEIGHTS_PATH)
-
-    def find_zip_member(self, archive, file_name):
-        for member in archive.infolist():
-            if member.is_dir():
-                continue
-            member_name = member.filename.replace("\\", "/").rstrip("/").split("/")[-1]
-            if member_name == file_name:
-                return member
-
-        raise FileNotFoundError(f"В архиве не найден {file_name}")
-
-    def write_zip_member(self, archive, member, target_path):
-        with archive.open(member) as source:
-            with target_path.open("wb") as target:
-                shutil.copyfileobj(source, target)
-
-    def read_json_file(self, file_path):
-        with file_path.open("r", encoding="utf-8") as file:
-            return json.load(file)
-
-    def read_manifest_version(self, manifest, manifest_name):
-        if not isinstance(manifest, dict):
-            raise ValueError(f"{manifest_name}: ожидался JSON-объект")
-
-        version = manifest.get("version")
-        if version in (None, ""):
-            raise ValueError(f"{manifest_name}: version не найден")
-
-        return str(version)
+        return f"Обновление модели завершено.\nВерсия: {result.version}"
 
     def build_health_url(self, api_url):
         api_url = api_url.strip().rstrip("/")
@@ -486,20 +388,6 @@ class MainWindow(QMainWindow):
             api_url = f"http://{api_url}"
 
         return f"{api_url}/health"
-
-    def build_model_manifest_url(self, api_url):
-        api_url = api_url.strip().rstrip("/")
-        if not re.match(r"^https?://", api_url):
-            api_url = f"http://{api_url}"
-
-        return f"{api_url}/model/manifest"
-
-    def build_model_latest_url(self, api_url):
-        api_url = api_url.strip().rstrip("/")
-        if not re.match(r"^https?://", api_url):
-            api_url = f"http://{api_url}"
-
-        return f"{api_url}/model/latest"
 
     def read_env_value(self, target_key):
         if not ENV_PATH.exists() or ENV_PATH.stat().st_size == 0:
