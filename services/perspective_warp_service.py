@@ -51,13 +51,6 @@ def detect_aruco_marker_rectangle(image):
     return _build_src_points(corners, ids)
 
 
-def draw_aruco_marker_rectangle(image, rectangle_points):
-    output_image = image.copy()
-    points = rectangle_points.astype(np.int32).reshape((-1, 1, 2))
-    cv2.polylines(output_image, [points], isClosed=True, color=(0, 255, 0), thickness=3)
-    return output_image
-
-
 def apply_perspective_warp(
     image,
     output_width: int = OUTPUT_WIDTH,

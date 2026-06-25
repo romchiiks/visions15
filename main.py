@@ -39,7 +39,6 @@ from services.camera_service import (
 from services.model_service import ModelUpdateError, update_model_files
 from services.perspective_warp_service import (
     detect_aruco_marker_rectangle,
-    draw_aruco_marker_rectangle,
 )
 from services.upload_service import (
     UploadArchiveError,
@@ -836,12 +835,9 @@ class MainWindow(QMainWindow):
         self.show_dataset_frame(frame)
 
     def show_dataset_frame(self, frame):
-        if self.dataset_marker_rectangle is None:
-            self.dataset_camera_screen.show_frame(frame)
-            return
-
         self.dataset_camera_screen.show_frame(
-            draw_aruco_marker_rectangle(frame, self.dataset_marker_rectangle)
+            frame,
+            marker_rectangle=self.dataset_marker_rectangle,
         )
 
     def take_dataset_snapshot(self):

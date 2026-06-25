@@ -43,7 +43,7 @@ class ImageScreen(QWidget):
         scaled_pixmap = pixmap.scaled(
             self.image_label.size(),
             Qt.KeepAspectRatio,
-            Qt.SmoothTransformation,
+            Qt.FastTransformation,
         )
         self.image_label.setPixmap(scaled_pixmap)
 
