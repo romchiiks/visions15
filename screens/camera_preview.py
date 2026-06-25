@@ -6,10 +6,10 @@ from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QLabel
 
 
-PREVIEW_WIDTH = 1280
-PREVIEW_HEIGHT = 720
+PREVIEW_WIDTH = 960
+PREVIEW_HEIGHT = 540
 MARKER_COLOR_BGR = (0, 255, 0)
-MARKER_THICKNESS = 3
+MARKER_THICKNESS = 2
 
 
 def show_camera_frame(
@@ -20,7 +20,6 @@ def show_camera_frame(
     max_height: int = PREVIEW_HEIGHT,
 ) -> None:
     preview_frame, scale = create_preview_frame(
-        camera_label,
         frame,
         max_width=max_width,
         max_height=max_height,
@@ -42,17 +41,12 @@ def show_camera_frame(
 
 
 def create_preview_frame(
-    camera_label: QLabel,
     frame,
     max_width: int = PREVIEW_WIDTH,
     max_height: int = PREVIEW_HEIGHT,
 ):
     height, width = frame.shape[:2]
-    label_width = max(1, camera_label.width())
-    label_height = max(1, camera_label.height())
     scale = min(
-        label_width / width,
-        label_height / height,
         max_width / width,
         max_height / height,
         1,
