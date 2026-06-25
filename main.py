@@ -63,7 +63,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("Складские детали")
+        self.setWindowTitle("IR AI")
         self.setMinimumSize(720, 480)
         self.buttons_config = load_buttons_config()
         self.last_scanned_image_path = None
