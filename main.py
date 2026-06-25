@@ -25,6 +25,7 @@ from screens import (
 from screens.common import LoadingDialog
 from services.camera_service import (
     CAMERA_CONFIG_PATH,
+    DATASET_DIR,
     DATASET_METADATA_PATH,
     DEFAULT_CAMERA_CONFIG,
     count_dataset_images,
@@ -577,10 +578,62 @@ class MainWindow(QMainWindow):
             else:
                 renamed_details[class_name] = article
 
+        try:
+            self.rename_dataset_class_dir(current_class_name, new_class_name)
+            self.rename_dataset_metadata_class(current_class_name, new_class_name)
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            QMessageBox.warning(self, "Редактирование детали", str(error))
+            return
+
         self.write_details(renamed_details)
         if self.active_dataset_class_name == current_class_name:
             self.active_dataset_class_name = new_class_name
         self.load_details()
+
+    def rename_dataset_class_dir(self, current_class_name, new_class_name):
+        current_class_dir = DATASET_DIR / current_class_name
+        if not current_class_dir.exists():
+            return
+
+        new_class_dir = DATASET_DIR / new_class_name
+        if new_class_dir.exists():
+            raise ValueError(f"Папка класса уже существует: {new_class_dir}")
+
+        current_class_dir.rename(new_class_dir)
+
+    def rename_dataset_metadata_class(self, current_class_name, new_class_name):
+        if not DATASET_METADATA_PATH.exists() or DATASET_METADATA_PATH.stat().st_size == 0:
+            return
+
+        with DATASET_METADATA_PATH.open("r", encoding="utf-8") as metadata_file:
+            metadata = json.load(metadata_file)
+
+        if not isinstance(metadata, dict):
+            raise ValueError("metadata.json должен содержать JSON-объект")
+
+        classes = metadata.get("classes", {})
+        if not isinstance(classes, dict):
+            raise ValueError("metadata.json: classes должен быть объектом")
+        if current_class_name not in classes:
+            return
+
+        renamed_classes = {}
+        for class_name, class_data in classes.items():
+            if class_name != current_class_name:
+                renamed_classes[class_name] = class_data
+                continue
+
+            if isinstance(class_data, dict):
+                class_data = {
+                    **class_data,
+                    "directory": new_class_name,
+                }
+            renamed_classes[new_class_name] = class_data
+
+        metadata["classes"] = renamed_classes
+        with DATASET_METADATA_PATH.open("w", encoding="utf-8") as metadata_file:
+            json.dump(metadata, metadata_file, ensure_ascii=False, indent=2)
+            metadata_file.write("\n")
 
     def delete_detail_class(self, class_name):
         details = self.read_details()
