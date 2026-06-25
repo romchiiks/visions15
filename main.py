@@ -6,6 +6,7 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event, Lock, Thread
 from time import monotonic, sleep
 
 import yaml
@@ -38,7 +39,7 @@ from services.camera_service import (
 )
 from services.model_service import ModelUpdateError, update_model_files
 from services.perspective_warp_service import (
-    detect_aruco_marker_rectangle_preview,
+    detect_aruco_marker_rectangle,
 )
 from services.upload_service import (
     UploadArchiveError,
@@ -74,6 +75,9 @@ class MainWindow(QMainWindow):
         self.dataset_camera = None
         self.dataset_camera_settings = None
         self.dataset_current_frame = None
+        self.dataset_frame_lock = Lock()
+        self.dataset_capture_stop = None
+        self.dataset_capture_thread = None
         self.dataset_marker_rectangle = None
         self.dataset_marker_future = None
         self.dataset_marker_detection_started_at = 0.0
@@ -741,6 +745,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Камера", f"Не удалось открыть камеру с index device = {device_index}")
                 return
 
+            self.start_dataset_capture_thread()
             self.dataset_preview_timer.start()
             QTimer.singleShot(0, self.refresh_dataset_camera_frame)
         finally:
@@ -751,6 +756,7 @@ class MainWindow(QMainWindow):
         self.dataset_record_timer.stop()
         self.dataset_recording = False
         self.dataset_camera_screen.set_recording(False)
+        self.stop_dataset_capture_thread()
 
         if self.dataset_camera is not None:
             self.dataset_camera.release()
@@ -760,10 +766,47 @@ class MainWindow(QMainWindow):
             self.dataset_marker_future.cancel()
 
         self.dataset_camera_settings = None
-        self.dataset_current_frame = None
+        with self.dataset_frame_lock:
+            self.dataset_current_frame = None
         self.dataset_marker_rectangle = None
         self.dataset_marker_future = None
         self.dataset_marker_detection_started_at = 0.0
+
+    def start_dataset_capture_thread(self):
+        self.stop_dataset_capture_thread()
+        self.dataset_capture_stop = Event()
+        self.dataset_capture_thread = Thread(
+            target=self.capture_dataset_frames,
+            daemon=True,
+        )
+        self.dataset_capture_thread.start()
+
+    def stop_dataset_capture_thread(self):
+        if self.dataset_capture_stop is not None:
+            self.dataset_capture_stop.set()
+
+        if self.dataset_capture_thread is not None:
+            self.dataset_capture_thread.join(timeout=1.0)
+
+        self.dataset_capture_stop = None
+        self.dataset_capture_thread = None
+
+    def capture_dataset_frames(self):
+        while self.dataset_capture_stop is not None and not self.dataset_capture_stop.is_set():
+            if self.dataset_camera is None:
+                break
+
+            success, frame = self.dataset_camera.read()
+            if not success:
+                sleep(0.05)
+                continue
+
+            with self.dataset_frame_lock:
+                self.dataset_current_frame = frame
+
+    def latest_dataset_frame(self):
+        with self.dataset_frame_lock:
+            return self.dataset_current_frame
 
     def update_dataset_images_count(self):
         self.dataset_camera_screen.set_images_count(
@@ -774,12 +817,10 @@ class MainWindow(QMainWindow):
         if self.dataset_camera is None:
             return
 
-        success, frame = self.dataset_camera.read()
-        if not success:
-            self.dataset_camera_screen.show_message("Не удалось получить кадр")
+        frame = self.latest_dataset_frame()
+        if frame is None:
             return
 
-        self.dataset_current_frame = frame
         self.update_dataset_marker_detection(frame)
         self.show_dataset_frame(frame)
 
@@ -807,8 +848,8 @@ class MainWindow(QMainWindow):
 
         self.dataset_marker_detection_started_at = current_time
         self.dataset_marker_future = self.dataset_marker_executor.submit(
-            detect_aruco_marker_rectangle_preview,
-            frame,
+            detect_aruco_marker_rectangle,
+            frame.copy(),
         )
 
     def show_dataset_frame(self, frame):
@@ -820,13 +861,14 @@ class MainWindow(QMainWindow):
     def take_dataset_snapshot(self):
         if self.active_dataset_class_name is None:
             return
-        if self.dataset_current_frame is None:
+        if self.latest_dataset_frame() is None:
             self.refresh_dataset_camera_frame()
-        if self.dataset_current_frame is None:
+        frame = self.latest_dataset_frame()
+        if frame is None:
             QMessageBox.warning(self, "Камера", "Нет кадра для сохранения")
             return
 
-        self.dataset_pending_frames.append(self.dataset_current_frame.copy())
+        self.dataset_pending_frames.append(frame.copy())
         self.update_dataset_images_count()
 
     def toggle_dataset_recording(self):
@@ -840,7 +882,6 @@ class MainWindow(QMainWindow):
         if self.dataset_camera is None or self.active_dataset_class_name is None:
             return
 
-        self.dataset_preview_timer.stop()
         self.dataset_recording = True
         self.dataset_camera_screen.set_recording(True)
         self.record_dataset_frame()
@@ -850,13 +891,12 @@ class MainWindow(QMainWindow):
         if self.dataset_camera is None or self.active_dataset_class_name is None:
             return
 
-        success, frame = self.dataset_camera.read()
-        if not success:
+        frame = self.latest_dataset_frame()
+        if frame is None:
             QMessageBox.warning(self, "Камера", "Не удалось получить кадр для записи")
             self.toggle_dataset_recording()
             return
 
-        self.dataset_current_frame = frame
         self.update_dataset_marker_detection(frame)
         self.show_dataset_frame(frame)
         self.dataset_pending_frames.append(frame.copy())
