@@ -32,6 +32,7 @@ from services.camera_service import (
     DEFAULT_CAMERA_CONFIG,
     count_dataset_images,
     open_configured_camera,
+    release_camera,
     remove_empty_dataset_class_dir,
     save_camera_image,
     save_frame_image,
@@ -742,7 +743,7 @@ class MainWindow(QMainWindow):
 
             if not self.dataset_camera.isOpened():
                 device_index = self.dataset_camera_settings["device_index"]
-                self.dataset_camera.release()
+                release_camera(self.dataset_camera)
                 self.dataset_camera = None
                 self.dataset_camera_settings = None
                 self.dataset_camera_screen.show_message("Камера не найдена")
@@ -764,7 +765,7 @@ class MainWindow(QMainWindow):
         self.stop_dataset_capture_thread()
 
         if self.dataset_camera is not None:
-            self.dataset_camera.release()
+            release_camera(self.dataset_camera)
             self.dataset_camera = None
 
         if self.dataset_marker_future is not None:
@@ -997,7 +998,7 @@ class MainWindow(QMainWindow):
 
         if not self.settings_camera.isOpened():
             device_index = self.settings_camera_settings["device_index"]
-            self.settings_camera.release()
+            release_camera(self.settings_camera)
             self.settings_camera = None
             self.settings_camera_settings = None
             self.settings_camera_screen.show_message("Камера не найдена")
@@ -1013,7 +1014,7 @@ class MainWindow(QMainWindow):
         self.stop_settings_capture_thread()
 
         if self.settings_camera is not None:
-            self.settings_camera.release()
+            release_camera(self.settings_camera)
             self.settings_camera = None
 
         self.settings_camera_settings = None
