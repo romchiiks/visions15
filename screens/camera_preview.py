@@ -6,8 +6,8 @@ from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QLabel
 
 
-PREVIEW_WIDTH = 960
-PREVIEW_HEIGHT = 540
+PREVIEW_WIDTH = 1280
+PREVIEW_HEIGHT = 720
 MARKER_COLOR_BGR = (0, 255, 0)
 MARKER_THICKNESS = 2
 
