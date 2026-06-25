@@ -9,6 +9,7 @@ from pathlib import Path
 from threading import Event, Lock, Thread
 from time import monotonic, sleep
 
+import cv2
 import yaml
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QInputDialog, QMainWindow, QMessageBox, QStackedWidget
@@ -86,6 +87,10 @@ class MainWindow(QMainWindow):
         self.dataset_recording = False
         self.settings_camera = None
         self.settings_camera_settings = None
+        self.settings_current_frame = None
+        self.settings_frame_lock = Lock()
+        self.settings_capture_stop = None
+        self.settings_capture_thread = None
         self.loading_dialog = LoadingDialog(self)
         self.loading_executor = ThreadPoolExecutor(max_workers=1)
         self.dataset_marker_executor = ThreadPoolExecutor(max_workers=1)
@@ -808,6 +813,22 @@ class MainWindow(QMainWindow):
         with self.dataset_frame_lock:
             return self.dataset_current_frame
 
+    def dataset_storage_frame(self, frame):
+        if self.dataset_camera_settings is None:
+            return frame.copy()
+
+        target_width = self.dataset_camera_settings["width"]
+        target_height = self.dataset_camera_settings["height"]
+        height, width = frame.shape[:2]
+        if width == target_width and height == target_height:
+            return frame.copy()
+
+        return cv2.resize(
+            frame,
+            (target_width, target_height),
+            interpolation=cv2.INTER_AREA,
+        )
+
     def update_dataset_images_count(self):
         self.dataset_camera_screen.set_images_count(
             self.dataset_saved_images_count + len(self.dataset_pending_frames)
@@ -868,7 +889,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Камера", "Нет кадра для сохранения")
             return
 
-        self.dataset_pending_frames.append(frame.copy())
+        self.dataset_pending_frames.append(self.dataset_storage_frame(frame))
         self.update_dataset_images_count()
 
     def toggle_dataset_recording(self):
@@ -899,7 +920,7 @@ class MainWindow(QMainWindow):
 
         self.update_dataset_marker_detection(frame)
         self.show_dataset_frame(frame)
-        self.dataset_pending_frames.append(frame.copy())
+        self.dataset_pending_frames.append(self.dataset_storage_frame(frame))
         self.update_dataset_images_count()
 
     def save_dataset_images(self):
@@ -983,25 +1004,64 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Камера", f"Не удалось открыть камеру с index device = {device_index}")
             return
 
-        self.refresh_settings_camera_frame()
+        self.start_settings_capture_thread()
         self.settings_camera_timer.start()
+        QTimer.singleShot(0, self.refresh_settings_camera_frame)
 
     def stop_settings_camera(self):
         self.settings_camera_timer.stop()
+        self.stop_settings_capture_thread()
 
         if self.settings_camera is not None:
             self.settings_camera.release()
             self.settings_camera = None
 
         self.settings_camera_settings = None
+        with self.settings_frame_lock:
+            self.settings_current_frame = None
+
+    def start_settings_capture_thread(self):
+        self.stop_settings_capture_thread()
+        self.settings_capture_stop = Event()
+        self.settings_capture_thread = Thread(
+            target=self.capture_settings_frames,
+            daemon=True,
+        )
+        self.settings_capture_thread.start()
+
+    def stop_settings_capture_thread(self):
+        if self.settings_capture_stop is not None:
+            self.settings_capture_stop.set()
+
+        if self.settings_capture_thread is not None:
+            self.settings_capture_thread.join(timeout=1.0)
+
+        self.settings_capture_stop = None
+        self.settings_capture_thread = None
+
+    def capture_settings_frames(self):
+        while self.settings_capture_stop is not None and not self.settings_capture_stop.is_set():
+            if self.settings_camera is None:
+                break
+
+            success, frame = self.settings_camera.read()
+            if not success:
+                sleep(0.05)
+                continue
+
+            with self.settings_frame_lock:
+                self.settings_current_frame = frame
+
+    def latest_settings_frame(self):
+        with self.settings_frame_lock:
+            return self.settings_current_frame
 
     def refresh_settings_camera_frame(self):
         if self.settings_camera is None:
             return
 
-        success, frame = self.settings_camera.read()
-        if not success:
-            self.settings_camera_screen.show_message("Не удалось получить кадр")
+        frame = self.latest_settings_frame()
+        if frame is None:
             return
 
         self.settings_camera_screen.show_frame(frame)
