@@ -814,6 +814,28 @@ class MainWindow(QMainWindow):
         with self.dataset_frame_lock:
             return self.dataset_current_frame
 
+    def is_dataset_frame_resolution_valid(self, frame):
+        if self.dataset_camera_settings is None:
+            return True
+
+        target_width = self.dataset_camera_settings["width"]
+        target_height = self.dataset_camera_settings["height"]
+        actual_height, actual_width = frame.shape[:2]
+        if actual_width == target_width and actual_height == target_height:
+            return True
+
+        QMessageBox.warning(
+            self,
+            "Камера",
+            (
+                "Фактическое разрешение камеры не совпадает с настройками.\n"
+                f"В настройках: {target_width}x{target_height}\n"
+                f"Камера отдает: {actual_width}x{actual_height}\n\n"
+                "Изображение не сохранено."
+            ),
+        )
+        return False
+
     def dataset_storage_frame(self, frame):
         if self.dataset_camera_settings is None:
             return frame.copy()
@@ -889,6 +911,8 @@ class MainWindow(QMainWindow):
         if frame is None:
             QMessageBox.warning(self, "Камера", "Нет кадра для сохранения")
             return
+        if not self.is_dataset_frame_resolution_valid(frame):
+            return
 
         self.dataset_pending_frames.append(self.dataset_storage_frame(frame))
         self.update_dataset_images_count()
@@ -902,6 +926,9 @@ class MainWindow(QMainWindow):
             return
 
         if self.dataset_camera is None or self.active_dataset_class_name is None:
+            return
+        frame = self.latest_dataset_frame()
+        if frame is not None and not self.is_dataset_frame_resolution_valid(frame):
             return
 
         self.dataset_recording = True
@@ -918,6 +945,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Камера", "Не удалось получить кадр для записи")
             self.toggle_dataset_recording()
             return
+        if not self.is_dataset_frame_resolution_valid(frame):
+            self.toggle_dataset_recording()
+            return
 
         self.update_dataset_marker_detection(frame)
         self.show_dataset_frame(frame)
@@ -931,6 +961,9 @@ class MainWindow(QMainWindow):
             self.toggle_dataset_recording()
         if not self.dataset_pending_frames:
             QMessageBox.information(self, "Датасет", "Нет новых фотографий для сохранения")
+            return
+        frame = self.latest_dataset_frame()
+        if frame is not None and not self.is_dataset_frame_resolution_valid(frame):
             return
 
         class_name = self.active_dataset_class_name
