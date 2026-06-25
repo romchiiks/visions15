@@ -5,6 +5,7 @@ from screens.image_screen import ImageScreen
 from screens.scan_screen import ScanScreen
 from screens.settings_camera_screen import SettingsCameraScreen
 from screens.settings_screen import SettingsScreen
+from screens.upload_screen import UploadScreen
 
 
 __all__ = [
@@ -15,4 +16,5 @@ __all__ = [
     "ScanScreen",
     "SettingsCameraScreen",
     "SettingsScreen",
+    "UploadScreen",
 ]

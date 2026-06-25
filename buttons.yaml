@@ -6,6 +6,10 @@ add_detail_button:
   button_text: "Добавить деталь"
   button_file: "screens/home_screen.py"
 
+upload_button:
+  button_text: "Выгрузка"
+  button_file: "screens/home_screen.py"
+
 settings_button:
   button_text: "Настройки"
   button_file: "screens/home_screen.py"
@@ -26,6 +30,14 @@ image_back_button:
   button_text: "Назад"
   button_file: "screens/image_screen.py"
 
+upload_back_button:
+  button_text: "Назад"
+  button_file: "screens/upload_screen.py"
+
+upload_action_button:
+  button_text: "Выгрузить"
+  button_file: "screens/upload_screen.py"
+
 add_detail_back_button:
   button_text: "Назад"
   button_file: "screens/add_detail_screen.py"
@@ -35,7 +47,7 @@ detail_add_button:
   button_file: "screens/add_detail_screen.py"
 
 dataset_camera_back_button:
-  button_text: "Назад"
+  button_text: "Отменить"
   button_file: "screens/dataset_camera_screen.py"
 
 settings_back_button:
@@ -48,6 +60,10 @@ settings_save_button:
 
 settings_check_connection_button:
   button_text: "Проверить соединение"
+  button_file: "screens/settings_screen.py"
+
+settings_update_model_button:
+  button_text: "Обновить модель"
   button_file: "screens/settings_screen.py"
 
 settings_camera_button:
@@ -64,4 +80,8 @@ dataset_snapshot_button:
 
 dataset_record_button:
   button_text: "Начать запись"
+  button_file: "screens/dataset_camera_screen.py"
+
+dataset_save_button:
+  button_text: "Сохранить"
   button_file: "screens/dataset_camera_screen.py"
