@@ -51,6 +51,7 @@ BUTTONS_PATH = BASE_DIR / "buttons.yaml"
 DETAILS_PATH = BASE_DIR / "details.json"
 ENV_PATH = BASE_DIR / ".env"
 SERVER_HEALTH_TIMEOUT_SECONDS = 5
+MODEL_MANIFEST_TIMEOUT_SECONDS = 30
 
 
 def load_buttons_config():
@@ -168,6 +169,7 @@ class MainWindow(QMainWindow):
         self.settings_screen.back_requested.connect(self.open_home_screen)
         self.settings_screen.save_requested.connect(self.save_settings)
         self.settings_screen.check_connection_requested.connect(self.check_server_connection)
+        self.settings_screen.update_model_requested.connect(self.update_model)
         self.settings_screen.camera_output_requested.connect(self.open_settings_camera_screen)
 
         self.settings_camera_screen.back_requested.connect(self.open_settings_screen)
@@ -342,12 +344,52 @@ class MainWindow(QMainWindow):
 
         QMessageBox.warning(self, "Настройки", "Соединение: ОШИБКА")
 
+    def update_model(self):
+        api_url = self.read_env_value("API_URL")
+        api_key = self.read_env_value("API_KEY")
+        if not api_url:
+            QMessageBox.warning(self, "Обновление модели", "API_URL не найден")
+            return
+        if not api_key:
+            QMessageBox.warning(self, "Обновление модели", "API_KEY не найден")
+            return
+
+        manifest_url = self.build_model_manifest_url(api_url)
+
+        def request_manifest():
+            request = urllib.request.Request(
+                manifest_url,
+                headers={"X-API-Key": api_key},
+            )
+            with urllib.request.urlopen(request, timeout=MODEL_MANIFEST_TIMEOUT_SECONDS) as response:
+                return response.read().decode("utf-8")
+
+        try:
+            response_text = self.run_blocking_with_loading("Обновление модели", request_manifest)
+        except (TimeoutError, OSError, UnicodeDecodeError, urllib.error.URLError) as error:
+            QMessageBox.warning(self, "Обновление модели", str(error))
+            return
+
+        try:
+            response_text = json.dumps(json.loads(response_text), ensure_ascii=False, indent=2)
+        except json.JSONDecodeError:
+            pass
+
+        QMessageBox.information(self, "Обновление модели", response_text)
+
     def build_health_url(self, api_url):
         api_url = api_url.strip().rstrip("/")
         if not re.match(r"^https?://", api_url):
             api_url = f"http://{api_url}"
 
-        return f"{api_url}/api/v1/health"
+        return f"{api_url}/health"
+
+    def build_model_manifest_url(self, api_url):
+        api_url = api_url.strip().rstrip("/")
+        if not re.match(r"^https?://", api_url):
+            api_url = f"http://{api_url}"
+
+        return f"{api_url}/model/manifest"
 
     def read_env_value(self, target_key):
         if not ENV_PATH.exists() or ENV_PATH.stat().st_size == 0:

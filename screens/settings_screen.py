@@ -18,6 +18,7 @@ class SettingsScreen(QWidget):
     back_requested = Signal()
     save_requested = Signal()
     check_connection_requested = Signal()
+    update_model_requested = Signal()
     camera_output_requested = Signal()
 
     def __init__(self, buttons_config):
@@ -79,6 +80,13 @@ class SettingsScreen(QWidget):
         server_actions.addWidget(self.settings_check_connection_button)
         server_actions.addStretch()
         server_layout.addLayout(server_actions)
+
+        model_actions = QHBoxLayout()
+        self.settings_update_model_button = create_button(buttons_config, "settings_update_model_button")
+        self.settings_update_model_button.clicked.connect(self.update_model_requested.emit)
+        model_actions.addWidget(self.settings_update_model_button)
+        model_actions.addStretch()
+        server_layout.addLayout(model_actions)
 
         camera_group = QGroupBox("Камера")
         camera_layout = QGridLayout(camera_group)

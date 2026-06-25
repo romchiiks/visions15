@@ -49,8 +49,8 @@ def upload_selected_classes(
         backup_dataset_dir=backup_dataset_dir,
         finalize_dataset=False,
     )
-    response = upload_project(
-        archive.metadata,
+    response = upload_archive(
+        archive.path,
         env_path=env_path,
         timeout_seconds=timeout_seconds,
     )
@@ -225,6 +225,36 @@ def upload_project(
     return response
 
 
+def upload_archive(
+    archive_path: Path | str,
+    env_path: Path | str = DEFAULT_ENV_PATH,
+    timeout_seconds: int = UPLOAD_REQUEST_TIMEOUT_SECONDS,
+) -> requests.Response:
+    archive_path = Path(archive_path)
+    api_url = read_env_value("API_URL", env_path)
+    api_key = read_env_value("API_KEY", env_path)
+    if not api_url:
+        raise UploadRequestError("API_URL не найден в .env")
+    if not api_key:
+        raise UploadRequestError("API_KEY не найден в .env")
+    if not archive_path.is_file():
+        raise FileNotFoundError(f"Архив не найден: {archive_path}")
+
+    try:
+        with archive_path.open("rb") as archive_file:
+            response = requests.post(
+                build_archive_upload_url(api_url),
+                headers={"X-API-Key": api_key},
+                files={"archive": (archive_path.name, archive_file)},
+                timeout=timeout_seconds,
+            )
+        response.raise_for_status()
+    except requests.RequestException as error:
+        raise UploadRequestError(f"Не удалось выгрузить архив: {error}") from error
+
+    return response
+
+
 def read_metadata(metadata_path: Path | str) -> dict:
     metadata_path = Path(metadata_path)
     if not metadata_path.exists() or metadata_path.stat().st_size == 0:
@@ -391,10 +421,17 @@ def build_projects_url(api_url: str) -> str:
     if not re.match(r"^https?://", api_url):
         api_url = f"http://{api_url}"
 
-    if api_url.endswith("/api/v1"):
-        return f"{api_url}/projects"
+    return f"{api_url}/projects"
 
-    return f"{api_url}/api/v1/projects"
+
+def build_archive_upload_url(api_url: str) -> str:
+    api_url = api_url.strip().rstrip("/")
+    if not api_url:
+        raise UploadRequestError("API_URL не должен быть пустым")
+    if not re.match(r"^https?://", api_url):
+        api_url = f"http://{api_url}"
+
+    return f"{api_url}/uploads/archive"
 
 
 def read_env_value(target_key: str, env_path: Path | str = DEFAULT_ENV_PATH) -> str | None:
