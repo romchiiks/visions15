@@ -38,7 +38,7 @@ from services.camera_service import (
 )
 from services.model_service import ModelUpdateError, update_model_files
 from services.perspective_warp_service import (
-    detect_aruco_marker_rectangle,
+    detect_aruco_marker_rectangle_preview,
 )
 from services.upload_service import (
     UploadArchiveError,
@@ -52,6 +52,7 @@ BUTTONS_PATH = BASE_DIR / "buttons.yaml"
 DETAILS_PATH = BASE_DIR / "details.json"
 ENV_PATH = BASE_DIR / ".env"
 SERVER_HEALTH_TIMEOUT_SECONDS = 5
+DATASET_MARKER_DETECTION_INTERVAL_SECONDS = 1.0
 
 
 def load_buttons_config():
@@ -74,6 +75,8 @@ class MainWindow(QMainWindow):
         self.dataset_camera_settings = None
         self.dataset_current_frame = None
         self.dataset_marker_rectangle = None
+        self.dataset_marker_future = None
+        self.dataset_marker_detection_started_at = 0.0
         self.dataset_pending_frames = []
         self.dataset_saved_images_count = 0
         self.dataset_recording = False
@@ -81,6 +84,7 @@ class MainWindow(QMainWindow):
         self.settings_camera_settings = None
         self.loading_dialog = LoadingDialog(self)
         self.loading_executor = ThreadPoolExecutor(max_workers=1)
+        self.dataset_marker_executor = ThreadPoolExecutor(max_workers=1)
 
         self.stack = QStackedWidget()
         self.setCentralWidget(self.stack)
@@ -737,12 +741,8 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Камера", f"Не удалось открыть камеру с index device = {device_index}")
                 return
 
-            self.loading_dialog.label.setText("Определение рабочей области")
-            self.process_loading_events()
-            if not self.detect_dataset_marker_rectangle_on_start():
-                return
-
             self.dataset_preview_timer.start()
+            QTimer.singleShot(0, self.refresh_dataset_camera_frame)
         finally:
             self.hide_loading()
 
@@ -756,71 +756,19 @@ class MainWindow(QMainWindow):
             self.dataset_camera.release()
             self.dataset_camera = None
 
+        if self.dataset_marker_future is not None:
+            self.dataset_marker_future.cancel()
+
         self.dataset_camera_settings = None
         self.dataset_current_frame = None
         self.dataset_marker_rectangle = None
+        self.dataset_marker_future = None
+        self.dataset_marker_detection_started_at = 0.0
 
     def update_dataset_images_count(self):
         self.dataset_camera_screen.set_images_count(
             self.dataset_saved_images_count + len(self.dataset_pending_frames)
         )
-
-    def detect_dataset_marker_rectangle_on_start(self):
-        while self.dataset_camera is not None:
-            frame = self.read_dataset_warmup_frame()
-            if frame is None:
-                return False
-
-            try:
-                self.dataset_marker_rectangle = detect_aruco_marker_rectangle(frame)
-            except RuntimeError:
-                self.dataset_marker_rectangle = None
-                self.dataset_camera_screen.show_frame(frame)
-                self.hide_loading()
-                should_retry = self.should_retry_dataset_marker_detection()
-                if should_retry:
-                    self.show_loading("Определение рабочей области")
-                    continue
-
-                self.cancel_dataset_detail()
-                return False
-
-            self.show_dataset_frame(frame)
-            return True
-
-        return False
-
-    def read_dataset_warmup_frame(self):
-        warmup_seconds = self.dataset_camera_settings["scan_warmup_seconds"]
-        started_at = monotonic()
-        last_frame = None
-
-        while self.dataset_camera is not None:
-            success, frame = self.dataset_camera.read()
-            if not success:
-                self.dataset_camera_screen.show_message("Не удалось получить кадр")
-                return None
-
-            last_frame = frame
-            self.dataset_current_frame = frame
-            if monotonic() - started_at >= warmup_seconds:
-                return last_frame
-
-            self.process_loading_events()
-            sleep(0.05)
-
-        return None
-
-    def should_retry_dataset_marker_detection(self):
-        message_box = QMessageBox(self)
-        message_box.setWindowTitle("Рабочая область")
-        message_box.setText("Рабочая область не определена")
-        retry_button = message_box.addButton("Попробовать снова", QMessageBox.AcceptRole)
-        message_box.addButton("Отмена", QMessageBox.RejectRole)
-        message_box.setDefaultButton(retry_button)
-        message_box.exec()
-
-        return message_box.clickedButton() == retry_button
 
     def refresh_dataset_camera_frame(self):
         if self.dataset_camera is None:
@@ -832,7 +780,36 @@ class MainWindow(QMainWindow):
             return
 
         self.dataset_current_frame = frame
+        self.update_dataset_marker_detection(frame)
         self.show_dataset_frame(frame)
+
+    def update_dataset_marker_detection(self, frame):
+        if self.dataset_marker_rectangle is not None:
+            return
+
+        if self.dataset_marker_future is not None:
+            if not self.dataset_marker_future.done():
+                return
+
+            try:
+                self.dataset_marker_rectangle = self.dataset_marker_future.result()
+            except Exception:
+                pass
+            finally:
+                self.dataset_marker_future = None
+
+            if self.dataset_marker_rectangle is not None:
+                return
+
+        current_time = monotonic()
+        if current_time - self.dataset_marker_detection_started_at < DATASET_MARKER_DETECTION_INTERVAL_SECONDS:
+            return
+
+        self.dataset_marker_detection_started_at = current_time
+        self.dataset_marker_future = self.dataset_marker_executor.submit(
+            detect_aruco_marker_rectangle_preview,
+            frame,
+        )
 
     def show_dataset_frame(self, frame):
         self.dataset_camera_screen.show_frame(
@@ -880,6 +857,7 @@ class MainWindow(QMainWindow):
             return
 
         self.dataset_current_frame = frame
+        self.update_dataset_marker_detection(frame)
         self.show_dataset_frame(frame)
         self.dataset_pending_frames.append(frame.copy())
         self.update_dataset_images_count()
@@ -991,6 +969,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         self.stop_dataset_camera()
         self.stop_settings_camera()
+        self.dataset_marker_executor.shutdown(wait=False, cancel_futures=True)
         self.loading_executor.shutdown(wait=False, cancel_futures=True)
         super().closeEvent(event)
 
