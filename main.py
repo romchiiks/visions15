@@ -588,14 +588,16 @@ class MainWindow(QMainWindow):
             self.load_details()
             return
 
-        answer = QMessageBox.question(
-            self,
-            "Удаление детали",
-            f'Удалить деталь "{class_name}"?',
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if answer != QMessageBox.StandardButton.Yes:
+        message_box = QMessageBox(self)
+        message_box.setWindowTitle("Удаление детали")
+        message_box.setText(f'Удалить деталь "{class_name}"?')
+        yes_button = message_box.addButton("Да", QMessageBox.ButtonRole.YesRole)
+        no_button = message_box.addButton("Нет", QMessageBox.ButtonRole.NoRole)
+        message_box.setDefaultButton(no_button)
+        message_box.setEscapeButton(no_button)
+        message_box.exec()
+
+        if message_box.clickedButton() != yes_button:
             return
 
         del details[class_name]
