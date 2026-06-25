@@ -35,6 +35,7 @@ from services.camera_service import (
     validate_class_name,
     write_dataset_metadata,
 )
+from services.model_service import ModelUpdateError, update_model_files
 from services.perspective_warp_service import (
     detect_aruco_marker_rectangle,
     draw_aruco_marker_rectangle,
@@ -51,7 +52,6 @@ BUTTONS_PATH = BASE_DIR / "buttons.yaml"
 DETAILS_PATH = BASE_DIR / "details.json"
 ENV_PATH = BASE_DIR / ".env"
 SERVER_HEALTH_TIMEOUT_SECONDS = 5
-MODEL_MANIFEST_TIMEOUT_SECONDS = 30
 
 
 def load_buttons_config():
@@ -354,28 +354,33 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Обновление модели", "API_KEY не найден")
             return
 
-        manifest_url = self.build_model_manifest_url(api_url)
-
-        def request_manifest():
-            request = urllib.request.Request(
-                manifest_url,
-                headers={"X-API-Key": api_key},
-            )
-            with urllib.request.urlopen(request, timeout=MODEL_MANIFEST_TIMEOUT_SECONDS) as response:
-                return response.read().decode("utf-8")
-
         try:
-            response_text = self.run_blocking_with_loading("Обновление модели", request_manifest)
-        except (TimeoutError, OSError, UnicodeDecodeError, urllib.error.URLError) as error:
+            result = self.run_blocking_with_loading(
+                "Обновление модели",
+                lambda: update_model_files(api_url, api_key),
+            )
+        except (ModelUpdateError, OSError, ValueError, json.JSONDecodeError) as error:
             QMessageBox.warning(self, "Обновление модели", str(error))
             return
 
-        try:
-            response_text = json.dumps(json.loads(response_text), ensure_ascii=False, indent=2)
-        except json.JSONDecodeError:
-            pass
+        QMessageBox.information(self, "Обновление модели", self.format_model_update_result(result))
 
-        QMessageBox.information(self, "Обновление модели", response_text)
+    def format_model_update_result(self, result):
+        if result.status == "downloaded":
+            return f"Модель загружена.\nВерсия: {result.version}"
+        if result.status == "recovered":
+            return f"Локальный manifest.json некорректен.\nМодель загружена.\nВерсия: {result.version}"
+        if result.status == "current":
+            return f"Модель актуальна.\nВерсия: {result.version}"
+        if result.status == "updated":
+            return (
+                "Модель обновлена.\n"
+                f"Локальная версия: {result.local_version}\n"
+                f"Удаленная версия: {result.remote_version}\n"
+                f"Установленная версия: {result.version}"
+            )
+
+        return f"Обновление модели завершено.\nВерсия: {result.version}"
 
     def build_health_url(self, api_url):
         api_url = api_url.strip().rstrip("/")
@@ -383,13 +388,6 @@ class MainWindow(QMainWindow):
             api_url = f"http://{api_url}"
 
         return f"{api_url}/health"
-
-    def build_model_manifest_url(self, api_url):
-        api_url = api_url.strip().rstrip("/")
-        if not re.match(r"^https?://", api_url):
-            api_url = f"http://{api_url}"
-
-        return f"{api_url}/model/manifest"
 
     def read_env_value(self, target_key):
         if not ENV_PATH.exists() or ENV_PATH.stat().st_size == 0:
