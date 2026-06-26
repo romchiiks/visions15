@@ -1,6 +1,7 @@
 import json
 import random
 import re
+import shutil
 import sys
 import urllib.error
 import urllib.request
@@ -604,18 +605,11 @@ class MainWindow(QMainWindow):
         current_class_dir.rename(new_class_dir)
 
     def rename_dataset_metadata_class(self, current_class_name, new_class_name):
-        if not DATASET_METADATA_PATH.exists() or DATASET_METADATA_PATH.stat().st_size == 0:
+        metadata_data = self.read_dataset_metadata_for_update()
+        if metadata_data is None:
             return
 
-        with DATASET_METADATA_PATH.open("r", encoding="utf-8") as metadata_file:
-            metadata = json.load(metadata_file)
-
-        if not isinstance(metadata, dict):
-            raise ValueError("metadata.json должен содержать JSON-объект")
-
-        classes = metadata.get("classes", {})
-        if not isinstance(classes, dict):
-            raise ValueError("metadata.json: classes должен быть объектом")
+        metadata, classes = metadata_data
         if current_class_name not in classes:
             return
 
@@ -633,9 +627,66 @@ class MainWindow(QMainWindow):
             renamed_classes[new_class_name] = class_data
 
         metadata["classes"] = renamed_classes
+        self.write_dataset_metadata_file(metadata)
+
+    def read_dataset_metadata_for_update(self):
+        if not DATASET_METADATA_PATH.exists() or DATASET_METADATA_PATH.stat().st_size == 0:
+            return None
+
+        with DATASET_METADATA_PATH.open("r", encoding="utf-8") as metadata_file:
+            metadata = json.load(metadata_file)
+
+        if not isinstance(metadata, dict):
+            raise ValueError("metadata.json должен содержать JSON-объект")
+
+        classes = metadata.get("classes", {})
+        if not isinstance(classes, dict):
+            raise ValueError("metadata.json: classes должен быть объектом")
+
+        return metadata, classes
+
+    def write_dataset_metadata_file(self, metadata):
         with DATASET_METADATA_PATH.open("w", encoding="utf-8") as metadata_file:
             json.dump(metadata, metadata_file, ensure_ascii=False, indent=2)
             metadata_file.write("\n")
+
+    def dataset_class_dir_from_name(self, class_name):
+        class_name = validate_class_name(str(class_name))
+        dataset_dir = DATASET_DIR.resolve()
+        class_dir = (DATASET_DIR / class_name).resolve()
+        if class_dir.parent != dataset_dir:
+            raise ValueError(f"Некорректная папка класса: {class_name}")
+
+        return class_dir
+
+    def delete_dataset_class_data(self, class_name):
+        metadata_data = self.read_dataset_metadata_for_update()
+        metadata = None
+        classes = {}
+        class_dirs = [self.dataset_class_dir_from_name(class_name)]
+
+        if metadata_data is not None:
+            metadata, classes = metadata_data
+            class_data = classes.get(class_name)
+            if isinstance(class_data, dict):
+                directory_name = class_data.get("directory")
+                if directory_name:
+                    class_dirs.append(self.dataset_class_dir_from_name(directory_name))
+
+        seen_class_dirs = set()
+        for class_dir in class_dirs:
+            if class_dir in seen_class_dirs:
+                continue
+            seen_class_dirs.add(class_dir)
+            if class_dir.exists():
+                shutil.rmtree(class_dir)
+
+        if metadata is None or class_name not in classes:
+            return
+
+        del classes[class_name]
+        metadata["classes"] = classes
+        self.write_dataset_metadata_file(metadata)
 
     def delete_detail_class(self, class_name):
         details = self.read_details()
@@ -653,6 +704,12 @@ class MainWindow(QMainWindow):
         message_box.exec()
 
         if message_box.clickedButton() != yes_button:
+            return
+
+        try:
+            self.delete_dataset_class_data(class_name)
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            QMessageBox.warning(self, "Удаление детали", str(error))
             return
 
         del details[class_name]
