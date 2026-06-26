@@ -5,6 +5,7 @@ import shutil
 import tarfile
 from dataclasses import dataclass
 from pathlib import Path
+from time import sleep
 from typing import Iterable
 
 import requests
@@ -17,6 +18,13 @@ DEFAULT_ENV_PATH = PROJECT_ROOT / ".env"
 DEFAULT_METADATA_PATH = DEFAULT_DATASET_DIR / "metadata.json"
 INVALID_CLASS_NAME_PATTERN = re.compile(r'[<>:"/\\|?*]')
 UPLOAD_REQUEST_TIMEOUT_SECONDS = 30
+DEFAULT_UPLOAD_MAX_ATTEMPTS = 5
+UPLOAD_RETRY_DELAY_SECONDS = 1.0
+RETRYABLE_UPLOAD_ERRORS = (
+    requests.ConnectionError,
+    requests.Timeout,
+    requests.exceptions.ChunkedEncodingError,
+)
 
 
 class UploadArchiveError(RuntimeError):
@@ -42,6 +50,7 @@ def upload_selected_classes(
     backup_dataset_dir: Path | str | None = None,
     env_path: Path | str = DEFAULT_ENV_PATH,
     timeout_seconds: int = UPLOAD_REQUEST_TIMEOUT_SECONDS,
+    max_attempts: int = DEFAULT_UPLOAD_MAX_ATTEMPTS,
 ) -> tuple[list[Path], requests.Response]:
     archive = create_dataset_update_archive_result(
         class_names,
@@ -53,8 +62,10 @@ def upload_selected_classes(
         archive.path,
         env_path=env_path,
         timeout_seconds=timeout_seconds,
+        max_attempts=max_attempts,
     )
-    finalize_dataset_update_archive(archive)
+    finalize_dataset_update_archive(archive, delete_uploaded_dataset=True)
+    archive.path.unlink(missing_ok=True)
 
     return [archive.path], response
 
@@ -124,8 +135,9 @@ def create_dataset_update_archive_result(
     remaining_metadata = metadata_without_classes(metadata, selected_class_names)
     backup_class_dirs = prepare_backup_class_dirs(class_dirs, backup_dataset_dir)
 
+    temp_archive_path = archive_path.with_name(f".{archive_path.name}.tmp")
     try:
-        with tarfile.open(archive_path, "w:gz") as archive:
+        with tarfile.open(temp_archive_path, "w:gz") as archive:
             add_metadata_to_archive(
                 archive,
                 archive_metadata,
@@ -133,7 +145,9 @@ def create_dataset_update_archive_result(
             )
             for class_name, class_dir in class_dirs:
                 archive.add(class_dir, arcname=f"{dataset_update_name}/{class_name}")
-    except tarfile.TarError as error:
+        temp_archive_path.replace(archive_path)
+    except (OSError, tarfile.TarError) as error:
+        temp_archive_path.unlink(missing_ok=True)
         raise UploadArchiveError(f"Не удалось создать архив {archive_path}") from error
 
     archive = DatasetUpdateArchive(
@@ -149,9 +163,19 @@ def create_dataset_update_archive_result(
     return archive
 
 
-def finalize_dataset_update_archive(archive: DatasetUpdateArchive) -> None:
-    move_class_dirs_to_backup(archive.backup_class_dirs)
-    write_metadata(archive.metadata_path, archive.remaining_metadata)
+def finalize_dataset_update_archive(
+    archive: DatasetUpdateArchive,
+    delete_uploaded_dataset: bool = False,
+) -> None:
+    moved_class_dirs = move_class_dirs_to_backup(archive.backup_class_dirs)
+    try:
+        write_metadata(archive.metadata_path, archive.remaining_metadata)
+    except Exception:
+        restore_class_dirs_from_backup(moved_class_dirs)
+        raise
+
+    if delete_uploaded_dataset:
+        delete_backup_class_dirs(moved_class_dirs)
 
 
 def create_class_archive(
@@ -229,6 +253,7 @@ def upload_archive(
     archive_path: Path | str,
     env_path: Path | str = DEFAULT_ENV_PATH,
     timeout_seconds: int = UPLOAD_REQUEST_TIMEOUT_SECONDS,
+    max_attempts: int = DEFAULT_UPLOAD_MAX_ATTEMPTS,
 ) -> requests.Response:
     archive_path = Path(archive_path)
     api_url = read_env_value("API_URL", env_path)
@@ -240,19 +265,35 @@ def upload_archive(
     if not archive_path.is_file():
         raise FileNotFoundError(f"Архив не найден: {archive_path}")
 
-    try:
-        with archive_path.open("rb") as archive_file:
-            response = requests.post(
-                build_archive_upload_url(api_url),
-                headers={"X-API-Key": api_key},
-                files={"archive": (archive_path.name, archive_file)},
-                timeout=timeout_seconds,
-            )
-        response.raise_for_status()
-    except requests.RequestException as error:
-        raise UploadRequestError(f"Не удалось выгрузить архив: {error}") from error
+    max_attempts = normalize_upload_attempts(max_attempts)
+    upload_url = build_archive_upload_url(api_url)
+    headers = {"X-API-Key": api_key}
+    last_error = None
 
-    return response
+    for attempt in range(1, max_attempts + 1):
+        try:
+            with archive_path.open("rb") as archive_file:
+                response = requests.post(
+                    upload_url,
+                    headers=headers,
+                    files={"archive": (archive_path.name, archive_file)},
+                    timeout=timeout_seconds,
+                )
+            response.raise_for_status()
+            return response
+        except RETRYABLE_UPLOAD_ERRORS as error:
+            last_error = error
+            if attempt == max_attempts:
+                break
+            sleep(UPLOAD_RETRY_DELAY_SECONDS)
+        except requests.RequestException as error:
+            raise UploadRequestError(f"Не удалось выгрузить архив: {error}") from error
+        except OSError as error:
+            raise UploadRequestError(f"Не удалось прочитать архив: {error}") from error
+
+    raise UploadRequestError(
+        f"Не удалось выгрузить архив после {max_attempts} попыток: {last_error}"
+    ) from last_error
 
 
 def read_metadata(metadata_path: Path | str) -> dict:
@@ -391,14 +432,29 @@ def unique_backup_class_dir(
     return destination_dir
 
 
-def move_class_dirs_to_backup(class_dirs: Iterable[tuple[Path, Path]]) -> None:
+def move_class_dirs_to_backup(class_dirs: Iterable[tuple[Path, Path]]) -> list[tuple[Path, Path]]:
     class_dirs = list(class_dirs)
     if not class_dirs:
-        return
+        return []
 
     class_dirs[0][1].parent.mkdir(parents=True, exist_ok=True)
+    moved_class_dirs = []
     for class_dir, destination_dir in class_dirs:
         shutil.move(str(class_dir), str(destination_dir))
+        moved_class_dirs.append((destination_dir, class_dir))
+
+    return moved_class_dirs
+
+
+def restore_class_dirs_from_backup(class_dirs: Iterable[tuple[Path, Path]]) -> None:
+    for backup_dir, class_dir in reversed(list(class_dirs)):
+        if backup_dir.exists() and not class_dir.exists():
+            shutil.move(str(backup_dir), str(class_dir))
+
+
+def delete_backup_class_dirs(class_dirs: Iterable[tuple[Path, Path]]) -> None:
+    for backup_dir, _class_dir in class_dirs:
+        shutil.rmtree(backup_dir)
 
 
 def add_metadata_to_archive(
@@ -485,6 +541,15 @@ def unique_class_names(class_names: Iterable[str]) -> list[str]:
         seen_names.add(class_name)
 
     return unique_names
+
+
+def normalize_upload_attempts(max_attempts: int) -> int:
+    try:
+        max_attempts = int(max_attempts)
+    except (TypeError, ValueError):
+        max_attempts = DEFAULT_UPLOAD_MAX_ATTEMPTS
+
+    return max(1, min(max_attempts, DEFAULT_UPLOAD_MAX_ATTEMPTS))
 
 
 def validate_dataset_update_name(dataset_update_name: str) -> str:

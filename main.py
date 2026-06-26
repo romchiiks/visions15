@@ -249,11 +249,12 @@ class MainWindow(QMainWindow):
 
         self.load_upload_classes()
 
-        archive_message_title = "Создан архив" if len(archive_paths) == 1 else "Созданы архивы"
+        archive_message_title = "Выгружен архив" if len(archive_paths) == 1 else "Выгружены архивы"
         message = (
             f"{archive_message_title}:\n"
             + "\n".join(str(path) for path in archive_paths)
-            + f"\n\nПроект отправлен. Код ответа: {response_status_code}"
+            + "\n\nЛокальные файлы выгруженных классов удалены."
+            + f"\nПроект отправлен. Код ответа: {response_status_code}"
         )
 
         QMessageBox.information(self, "Выгрузка", message)
