@@ -41,6 +41,7 @@ from services.perspective_warp_service import (
     detect_aruco_marker_rectangle,
     draw_aruco_marker_rectangle,
 )
+from services.predict_service import PredictionError, predict_image
 from services.upload_service import (
     UploadArchiveError,
     UploadRequestError,
@@ -661,7 +662,7 @@ class MainWindow(QMainWindow):
 
     def scan_camera_image(self):
         try:
-            self.last_scanned_image_path = self.run_blocking_with_loading(
+            scanned_image_path = self.run_blocking_with_loading(
                 "Сканирование",
                 lambda: save_camera_image(is_scanned=True),
             )
@@ -670,7 +671,18 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Сканирование", str(error))
             return
 
-        self.scan_screen.show_scan_result()
+        try:
+            prediction_result = self.run_blocking_with_loading(
+                "Распознавание",
+                lambda: predict_image(scanned_image_path),
+            )
+        except PredictionError as error:
+            self.last_scanned_image_path = scanned_image_path
+            QMessageBox.warning(self, "Распознавание", str(error))
+            return
+
+        self.last_scanned_image_path = prediction_result.visual_path or scanned_image_path
+        self.scan_screen.show_scan_result(prediction_result.predictions, self.read_details())
 
     def open_image_screen(self):
         self.stack.setCurrentWidget(self.image_screen)

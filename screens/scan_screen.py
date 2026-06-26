@@ -1,3 +1,5 @@
+from collections import Counter
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QHBoxLayout, QHeaderView, QLabel, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 
@@ -42,12 +44,23 @@ class ScanScreen(QWidget):
         layout.addWidget(title)
         layout.addWidget(self.results_table)
 
-    def show_scan_result(self):
-        self.results_table.setRowCount(1)
-        for column in range(3):
-            item = QTableWidgetItem("null")
-            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-            self.results_table.setItem(0, column, item)
+    def show_scan_result(self, predictions, details):
+        counts = Counter(prediction.category_name for prediction in predictions)
+
+        if not counts:
+            self.results_table.setRowCount(1)
+            self.set_result_row(0, "Не найдено", "0", "")
+            return
+
+        self.results_table.setRowCount(len(counts))
+        for row, (category_name, count) in enumerate(sorted(counts.items())):
+            self.set_result_row(row, category_name, str(count), str(details.get(category_name, "")))
 
     def clear_scan_result(self):
         self.results_table.setRowCount(0)
+
+    def set_result_row(self, row, name, count, article):
+        for column, value in enumerate((name, count, article)):
+            item = QTableWidgetItem(value)
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            self.results_table.setItem(row, column, item)
