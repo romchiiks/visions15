@@ -4,7 +4,6 @@ import re
 import sys
 import urllib.error
 import urllib.request
-from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from time import monotonic, sleep
@@ -42,7 +41,6 @@ from services.perspective_warp_service import (
     detect_aruco_marker_rectangle,
     draw_aruco_marker_rectangle,
 )
-from services.predict_service import PredictionError, predict_image
 from services.upload_service import (
     UploadArchiveError,
     UploadRequestError,
@@ -663,38 +661,16 @@ class MainWindow(QMainWindow):
 
     def scan_camera_image(self):
         try:
-            scan_result = self.run_blocking_with_loading(
+            self.last_scanned_image_path = self.run_blocking_with_loading(
                 "Сканирование",
-                lambda: self.scan_and_predict_camera_image(),
+                lambda: save_camera_image(is_scanned=True),
             )
-        except (RuntimeError, ValueError, PredictionError) as error:
+        except (RuntimeError, ValueError) as error:
             self.last_scanned_image_path = None
             QMessageBox.warning(self, "Сканирование", str(error))
             return
 
-        self.last_scanned_image_path = scan_result["image_path"]
-        self.scan_screen.show_scan_result(scan_result["rows"])
-
-    def scan_and_predict_camera_image(self):
-        scanned_image_path = save_camera_image(is_scanned=True)
-        prediction_result = predict_image(scanned_image_path)
-
-        image_path = prediction_result.visual_path or prediction_result.image_path
-        return {
-            "image_path": image_path,
-            "rows": self.build_scan_result_rows(prediction_result.predictions),
-        }
-
-    def build_scan_result_rows(self, predictions):
-        if not predictions:
-            return [("Ничего не найдено", 0, "")]
-
-        details = self.read_details()
-        category_counts = Counter(prediction.category_name for prediction in predictions)
-        return [
-            (category_name, count, details.get(category_name, ""))
-            for category_name, count in sorted(category_counts.items())
-        ]
+        self.scan_screen.show_scan_result()
 
     def open_image_screen(self):
         self.stack.setCurrentWidget(self.image_screen)
