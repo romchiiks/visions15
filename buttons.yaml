@@ -22,13 +22,9 @@ scan_action_button:
   button_text: "Сканировать"
   button_file: "screens/scan_screen.py"
 
-show_image_button:
-  button_text: "Показать изображение"
-  button_file: "screens/scan_screen.py"
-
-image_back_button:
+scan_camera_back_button:
   button_text: "Назад"
-  button_file: "screens/image_screen.py"
+  button_file: "screens/scan_camera_screen.py"
 
 upload_back_button:
   button_text: "Назад"

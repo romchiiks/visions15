@@ -157,7 +157,7 @@ def parse_prediction(raw_prediction: dict) -> Prediction:
         raise PredictionError("YOLO inference: bbox_xyxy должен содержать 4 числа")
 
     try:
-        score = float(score)
+        score = float(score) # type: ignore
     except (TypeError, ValueError) as error:
         raise PredictionError("YOLO inference: score должен быть числом") from error
 

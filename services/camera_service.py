@@ -6,13 +6,10 @@ import re
 
 import cv2
 
-from services.perspective_warp_service import apply_perspective_warp
-
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CAMERA_CONFIG_PATH = PROJECT_ROOT / "camera_config.json"
 CAPTURES_DIR = PROJECT_ROOT / "captures"
-SCANNED_DIR = CAPTURES_DIR / "scanned"
 DATASET_DIR = CAPTURES_DIR / "dataset"
 DATASET_METADATA_PATH = DATASET_DIR / "metadata.json"
 DATASET_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
@@ -23,13 +20,8 @@ DEFAULT_CAMERA_CONFIG = {
     "width": 640,
     "height": 480,
     "capture_interval": 1,
-    "scan_warmup_seconds": 2.0,
-    "scan_max_wait_seconds": 5.0,
+    "camera_warmup_seconds": 2.0,
 }
-
-
-def _timestamp() -> str:
-    return datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")
 
 
 def _dataset_date() -> str:
@@ -61,13 +53,9 @@ def _load_camera_config() -> dict:
         "width": config.get("width", DEFAULT_CAMERA_CONFIG["width"]),
         "height": config.get("height", DEFAULT_CAMERA_CONFIG["height"]),
         "capture_interval": config.get("capture_interval", DEFAULT_CAMERA_CONFIG["capture_interval"]),
-        "scan_warmup_seconds": config.get(
-            "scan_warmup_seconds",
-            DEFAULT_CAMERA_CONFIG["scan_warmup_seconds"],
-        ),
-        "scan_max_wait_seconds": config.get(
-            "scan_max_wait_seconds",
-            DEFAULT_CAMERA_CONFIG["scan_max_wait_seconds"],
+        "camera_warmup_seconds": config.get(
+            "camera_warmup_seconds",
+            DEFAULT_CAMERA_CONFIG["camera_warmup_seconds"],
         ),
     }
 
@@ -111,8 +99,7 @@ def get_camera_settings(
         "width": _get_int_setting(settings, "width"),
         "height": _get_int_setting(settings, "height"),
         "capture_interval": _get_int_setting(settings, "capture_interval"),
-        "scan_warmup_seconds": _get_float_setting(settings, "scan_warmup_seconds"),
-        "scan_max_wait_seconds": _get_float_setting(settings, "scan_max_wait_seconds"),
+        "camera_warmup_seconds": _get_float_setting(settings, "camera_warmup_seconds"),
     }
 
     if settings["device_index"] < 0:
@@ -125,10 +112,8 @@ def get_camera_settings(
         raise ValueError("height в camera_config.json должен быть больше 0")
     if settings["capture_interval"] <= 0:
         raise ValueError("capture_interval в camera_config.json должен быть больше 0")
-    if settings["scan_warmup_seconds"] < 0:
-        raise ValueError("scan_warmup_seconds в camera_config.json должен быть больше или равен 0")
-    if settings["scan_max_wait_seconds"] <= 0:
-        raise ValueError("scan_max_wait_seconds в camera_config.json должен быть больше 0")
+    if settings["camera_warmup_seconds"] < 0:
+        raise ValueError("camera_warmup_seconds в camera_config.json должен быть больше или равен 0")
 
     return settings
 
@@ -262,77 +247,12 @@ def _write_image(image_path: Path, frame) -> None:
     image_path.write_bytes(encoded_image.tobytes())
 
 
-def _is_green_placeholder_frame(frame) -> bool:
-    channel_means = frame.mean(axis=(0, 1))
-    channel_stds = frame.std(axis=(0, 1))
-    blue_mean, green_mean, red_mean = channel_means
-
-    is_solid_color = all(channel_std < 8 for channel_std in channel_stds)
-    is_green_dominant = green_mean > 80 and green_mean > blue_mean * 1.5 and green_mean > red_mean * 1.5
-
-    return bool(is_solid_color and is_green_dominant)
-
-
-def _read_stable_scan_frame(camera, settings: dict[str, bool | int | float]):
-    warmup_seconds = settings["scan_warmup_seconds"]
-    max_wait_seconds = settings["scan_max_wait_seconds"]
-    started_at = monotonic()
-    last_frame = None
-
-    while True:
-        success, frame = camera.read()
-        if not success:
-            raise RuntimeError("Cannot read frame from camera")
-
-        last_frame = frame
-        elapsed = monotonic() - started_at
-        if elapsed >= warmup_seconds and not _is_green_placeholder_frame(frame):
-            return frame
-        if elapsed >= max_wait_seconds:
-            if _is_green_placeholder_frame(last_frame):
-                raise RuntimeError("Камера не успела подготовить изображение: получен зеленый кадр")
-            return last_frame
-
-        sleep(0.05)
-
-
-def save_frame_image(frame, class_name: str, is_scanned: bool = False) -> Path:
-    if is_scanned:
-        captures_dir = _ensure_dir(SCANNED_DIR)
-        image_name = f"{_timestamp()}.jpeg"
-        image_path = captures_dir / image_name
-    else:
-        image_path = _next_dataset_image_path(class_name)
+def save_frame_image(frame, class_name: str) -> Path:
+    image_path = _next_dataset_image_path(class_name)
 
     _write_image(image_path, frame)
 
     return image_path
-
-
-def save_camera_image(
-    device_index: int | None = None,
-    fps: int | None = None,
-    is_scanned: bool = True,
-    dataset_class_name: str | None = None,
-) -> Path:
-    class_name = dataset_class_name if dataset_class_name is not None else "NEW_CLASS"
-    camera, camera_settings = open_configured_camera(device_index=device_index, fps=fps)
-
-    try:
-        if not camera.isOpened():
-            raise RuntimeError(f"Cannot open camera with device index {camera_settings['device_index']}")
-
-        if is_scanned:
-            frame = _read_stable_scan_frame(camera, camera_settings)
-            frame = apply_perspective_warp(frame)
-        else:
-            success, frame = camera.read()
-            if not success:
-                raise RuntimeError("Cannot read frame from camera")
-
-        return save_frame_image(frame, class_name=class_name, is_scanned=is_scanned)
-    finally:
-        camera.release()
 
 
 def save_camera_image_stream(
@@ -364,7 +284,7 @@ def save_camera_image_stream(
             if not success:
                 raise RuntimeError("Cannot read frame from camera")
 
-            saved_paths.append(save_frame_image(frame, class_name=class_name, is_scanned=False))
+            saved_paths.append(save_frame_image(frame, class_name=class_name))
 
             elapsed = monotonic() - loop_started_at
             sleep(max(0, interval_seconds - elapsed))
