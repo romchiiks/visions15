@@ -11,6 +11,7 @@ import requests
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MODEL_DIR = PROJECT_ROOT / "model"
+DEFAULT_MODEL_WEIGHTS_PATH = Path("/mnt/IR_AI/local-yolo-gpio-server/model/model.pt")
 MODEL_MANIFEST_FILE_NAME = "manifest.json"
 MODEL_WEIGHTS_FILE_NAME = "model.pt"
 MODEL_MANIFEST_TIMEOUT_SECONDS = 30
@@ -33,19 +34,22 @@ def update_model_files(
     api_url: str,
     api_key: str,
     model_dir: Path | str = DEFAULT_MODEL_DIR,
+    model_weights_path: Path | str = DEFAULT_MODEL_WEIGHTS_PATH,
 ) -> ModelUpdateResult:
     model_dir = Path(model_dir)
+    model_weights_path = Path(model_weights_path)
     model_dir.mkdir(parents=True, exist_ok=True)
+    model_weights_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if not has_local_model_files(model_dir):
-        version = download_and_extract_latest_model(api_url, api_key, model_dir)
+    if not has_local_model_files(model_dir, model_weights_path):
+        version = download_and_extract_latest_model(api_url, api_key, model_dir, model_weights_path)
         return ModelUpdateResult(status="downloaded", version=version)
 
     try:
         local_manifest = read_json_file(model_dir / MODEL_MANIFEST_FILE_NAME)
         local_version = read_manifest_version(local_manifest, "local manifest.json")
     except (OSError, json.JSONDecodeError, ValueError):
-        version = download_and_extract_latest_model(api_url, api_key, model_dir)
+        version = download_and_extract_latest_model(api_url, api_key, model_dir, model_weights_path)
         return ModelUpdateResult(status="recovered", version=version)
 
     remote_manifest = request_model_manifest(api_url, api_key)
@@ -54,7 +58,7 @@ def update_model_files(
     if local_version == remote_version:
         return ModelUpdateResult(status="current", version=local_version)
 
-    version = download_and_extract_latest_model(api_url, api_key, model_dir)
+    version = download_and_extract_latest_model(api_url, api_key, model_dir, model_weights_path)
     return ModelUpdateResult(
         status="updated",
         version=version,
@@ -63,10 +67,10 @@ def update_model_files(
     )
 
 
-def has_local_model_files(model_dir: Path) -> bool:
+def has_local_model_files(model_dir: Path, model_weights_path: Path) -> bool:
     return (
         (model_dir / MODEL_MANIFEST_FILE_NAME).is_file()
-        and (model_dir / MODEL_WEIGHTS_FILE_NAME).is_file()
+        and model_weights_path.is_file()
     )
 
 
@@ -83,10 +87,15 @@ def request_model_manifest(api_url: str, api_key: str) -> dict:
         raise ModelUpdateError(f"Не удалось получить manifest.json: {error}") from error
 
 
-def download_and_extract_latest_model(api_url: str, api_key: str, model_dir: Path) -> str:
+def download_and_extract_latest_model(
+    api_url: str,
+    api_key: str,
+    model_dir: Path,
+    model_weights_path: Path,
+) -> str:
     archive_path = download_latest_model_archive(api_url, api_key)
     try:
-        extract_model_archive(archive_path, model_dir)
+        extract_model_archive(archive_path, model_dir, model_weights_path)
     finally:
         archive_path.unlink(missing_ok=True)
 
@@ -128,22 +137,27 @@ def download_latest_model_archive(api_url: str, api_key: str) -> Path:
         raise
 
 
-def extract_model_archive(archive_path: Path, model_dir: Path) -> None:
+def extract_model_archive(archive_path: Path, model_dir: Path, model_weights_path: Path) -> None:
+    model_dir.mkdir(parents=True, exist_ok=True)
+    model_weights_path.parent.mkdir(parents=True, exist_ok=True)
+
     try:
         with zipfile.ZipFile(archive_path) as archive:
             manifest_member = find_zip_member(archive, MODEL_MANIFEST_FILE_NAME)
             model_member = find_zip_member(archive, MODEL_WEIGHTS_FILE_NAME)
 
-            with tempfile.TemporaryDirectory(dir=model_dir) as temp_dir:
-                temp_dir = Path(temp_dir)
-                temp_manifest_path = temp_dir / MODEL_MANIFEST_FILE_NAME
-                temp_model_path = temp_dir / MODEL_WEIGHTS_FILE_NAME
+            with (
+                tempfile.TemporaryDirectory(dir=model_dir) as temp_manifest_dir,
+                tempfile.TemporaryDirectory(dir=model_weights_path.parent) as temp_model_dir,
+            ):
+                temp_manifest_path = Path(temp_manifest_dir) / MODEL_MANIFEST_FILE_NAME
+                temp_model_path = Path(temp_model_dir) / MODEL_WEIGHTS_FILE_NAME
 
                 write_zip_member(archive, manifest_member, temp_manifest_path)
                 write_zip_member(archive, model_member, temp_model_path)
 
+                temp_model_path.replace(model_weights_path)
                 temp_manifest_path.replace(model_dir / MODEL_MANIFEST_FILE_NAME)
-                temp_model_path.replace(model_dir / MODEL_WEIGHTS_FILE_NAME)
     except zipfile.BadZipFile as error:
         raise ModelUpdateError(f"Некорректный архив модели: {archive_path}") from error
 
