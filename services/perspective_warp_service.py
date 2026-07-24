@@ -8,7 +8,7 @@ REQUIRED_IDS = (0, 1, 2, 3)
 REQUIRED_IDS_SET = set(REQUIRED_IDS)
 
 
-def _create_detector():
+def create_aruco_detector():
     aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
     detector_parameters = cv2.aruco.DetectorParameters()
     return cv2.aruco.ArucoDetector(aruco_dict, detector_parameters)
@@ -45,8 +45,10 @@ def _build_src_points(corners, ids):
     )
 
 
-def detect_aruco_marker_rectangle(image):
-    detector = _create_detector()
+def detect_aruco_marker_rectangle(image, detector=None):
+    if detector is None:
+        detector = create_aruco_detector()
+
     corners, ids = _detect_markers(image, detector)
     return _build_src_points(corners, ids)
 

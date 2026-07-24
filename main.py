@@ -39,6 +39,7 @@ from services.camera_service import (
 from services.model_service import ModelUpdateError, update_model_files
 from services.perspective_warp_service import (
     apply_perspective_warp,
+    create_aruco_detector,
     detect_aruco_marker_rectangle,
     draw_aruco_marker_rectangle,
 )
@@ -75,6 +76,7 @@ class MainWindow(QMainWindow):
         self.dataset_camera_settings = None
         self.dataset_current_frame = None
         self.dataset_marker_rectangle = None
+        self.dataset_aruco_detector = create_aruco_detector()
         self.dataset_pending_frames = []
         self.dataset_saved_images_count = 0
         self.dataset_recording = False
@@ -836,7 +838,10 @@ class MainWindow(QMainWindow):
                 return False
 
             try:
-                self.dataset_marker_rectangle = detect_aruco_marker_rectangle(frame)
+                self.dataset_marker_rectangle = detect_aruco_marker_rectangle(
+                    frame,
+                    detector=self.dataset_aruco_detector,
+                )
             except RuntimeError:
                 self.dataset_marker_rectangle = None
                 self.dataset_camera_screen.show_frame(frame)
@@ -916,6 +921,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Камера", "Нет кадра для сохранения")
             return
 
+        if not self.dataset_frame_has_required_markers(self.dataset_current_frame):
+            return
+
         self.dataset_pending_frames.append(self.dataset_current_frame.copy())
         self.update_dataset_images_count()
 
@@ -948,8 +956,23 @@ class MainWindow(QMainWindow):
 
         self.dataset_current_frame = frame
         self.show_dataset_frame(frame)
+        if not self.dataset_frame_has_required_markers(frame):
+            return
+
         self.dataset_pending_frames.append(frame.copy())
         self.update_dataset_images_count()
+
+    def dataset_frame_has_required_markers(self, frame):
+        try:
+            detect_aruco_marker_rectangle(
+                frame,
+                detector=self.dataset_aruco_detector,
+            )
+        except RuntimeError as error:
+            self.dataset_camera_screen.show_message(f"Кадр пропущен: {error}")
+            return False
+
+        return True
 
     def save_dataset_images(self):
         if self.active_dataset_class_name is None:
