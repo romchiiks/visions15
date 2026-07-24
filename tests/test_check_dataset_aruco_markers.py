@@ -58,3 +58,26 @@ def test_find_invalid_images_reports_missing_markers(tmp_path, monkeypatch):
             "Не найдены обязательные Aruco-маркеры: [3]",
         )
     ]
+
+
+def test_confirm_deletion_repeats_until_y_or_n(monkeypatch):
+    answers = iter(["unexpected", "Y"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
+
+    assert check_dataset_aruco_markers.confirm_deletion() is True
+
+
+def test_delete_invalid_images_deletes_all_problematic_files(tmp_path):
+    first_image = create_dataset_image(tmp_path, "class-a", "first.jpeg")
+    second_image = create_dataset_image(tmp_path, "class-b", "second.jpeg")
+
+    deletion_errors = check_dataset_aruco_markers.delete_invalid_images(
+        [
+            (first_image, "missing markers"),
+            (second_image, "missing markers"),
+        ]
+    )
+
+    assert deletion_errors == []
+    assert not first_image.exists()
+    assert not second_image.exists()

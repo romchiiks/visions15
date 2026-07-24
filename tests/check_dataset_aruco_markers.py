@@ -51,6 +51,30 @@ def find_invalid_images(
     return invalid_images
 
 
+def confirm_deletion() -> bool:
+    while True:
+        answer = input("Удалить проблемные изображения? (y/n): ").strip().lower()
+        if answer == "y":
+            return True
+        if answer == "n":
+            return False
+
+        print("Введите y или n.")
+
+
+def delete_invalid_images(
+    invalid_images: list[tuple[Path, str]],
+) -> list[tuple[Path, str]]:
+    deletion_errors = []
+    for image_path, _ in invalid_images:
+        try:
+            image_path.unlink()
+        except OSError as error:
+            deletion_errors.append((image_path, str(error)))
+
+    return deletion_errors
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Проверка ArUco-маркеров в несжатых изображениях датасета.",
@@ -80,7 +104,21 @@ def main() -> int:
         f"проблемных: {len(invalid_images)}"
     )
 
-    return 1 if invalid_images else 0
+    if not invalid_images:
+        return 0
+
+    if not confirm_deletion():
+        print("Проблемные изображения не удалены.")
+        return 1
+
+    deletion_errors = delete_invalid_images(invalid_images)
+    for image_path, reason in deletion_errors:
+        print(f"[ОШИБКА УДАЛЕНИЯ] {image_path}: {reason}")
+
+    deleted_count = len(invalid_images) - len(deletion_errors)
+    print(f"Удалено проблемных изображений: {deleted_count}")
+
+    return 1 if deletion_errors else 0
 
 
 if __name__ == "__main__":
