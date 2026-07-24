@@ -4,6 +4,8 @@ import numpy as np
 
 OUTPUT_WIDTH = 2550 #CHANGE THIS 
 OUTPUT_HEIGHT = 1680 #CHANGE THIS
+SAHI_SLICE_SIZE = 1024
+SAHI_OVERLAP_RATIO = 0.2
 REQUIRED_IDS = (0, 1, 2, 3)
 REQUIRED_IDS_SET = set(REQUIRED_IDS)
 
@@ -57,6 +59,118 @@ def draw_aruco_marker_rectangle(image, rectangle_points):
     output_image = image.copy()
     points = rectangle_points.astype(np.int32).reshape((-1, 1, 2))
     cv2.polylines(output_image, [points], isClosed=True, color=(0, 255, 0), thickness=3)
+    return output_image
+
+
+def get_sahi_slice_intervals(
+    image_length: int,
+    slice_size: int = SAHI_SLICE_SIZE,
+    overlap_ratio: float = SAHI_OVERLAP_RATIO,
+):
+    if image_length <= 0 or slice_size <= 0:
+        raise ValueError("Размер изображения и слайса должен быть больше 0")
+    if not 0 <= overlap_ratio < 1:
+        raise ValueError("Overlap должен быть в диапазоне от 0 до 1")
+    if image_length <= slice_size:
+        return [(0, image_length)]
+
+    overlap = int(slice_size * overlap_ratio)
+    step = slice_size - overlap
+    intervals = []
+    start = 0
+
+    while True:
+        end = start + slice_size
+        if end >= image_length:
+            last_start = image_length - slice_size
+            last_interval = (last_start, image_length)
+            if not intervals or intervals[-1] != last_interval:
+                intervals.append(last_interval)
+            return intervals
+
+        intervals.append((start, end))
+        start += step
+
+
+def _overlap_intervals(slice_intervals):
+    return [
+        (current_start, previous_end)
+        for (_, previous_end), (current_start, _) in zip(
+            slice_intervals,
+            slice_intervals[1:],
+        )
+        if current_start < previous_end
+    ]
+
+
+def _project_work_area_polygon(points, inverse_matrix):
+    polygon = np.array(points, dtype=np.float32).reshape((-1, 1, 2))
+    return cv2.perspectiveTransform(polygon, inverse_matrix).astype(np.int32)
+
+
+def draw_sahi_overlap_boundaries(
+    image,
+    rectangle_points,
+    output_width: int = OUTPUT_WIDTH,
+    output_height: int = OUTPUT_HEIGHT,
+    slice_size: int = SAHI_SLICE_SIZE,
+    overlap_ratio: float = SAHI_OVERLAP_RATIO,
+):
+    output_image = draw_aruco_marker_rectangle(image, rectangle_points)
+    destination_points = np.array(
+        [
+            [0, 0],
+            [output_width - 1, 0],
+            [output_width - 1, output_height - 1],
+            [0, output_height - 1],
+        ],
+        dtype=np.float32,
+    )
+    inverse_matrix = cv2.getPerspectiveTransform(
+        destination_points,
+        rectangle_points.astype(np.float32),
+    )
+
+    x_overlaps = _overlap_intervals(
+        get_sahi_slice_intervals(output_width, slice_size, overlap_ratio)
+    )
+    y_overlaps = _overlap_intervals(
+        get_sahi_slice_intervals(output_height, slice_size, overlap_ratio)
+    )
+
+    overlap_color = (0, 165, 255)
+    overlay = output_image.copy()
+    overlap_polygons = []
+
+    for left, right in x_overlaps:
+        overlap_polygons.append(
+            _project_work_area_polygon(
+                [(left, 0), (right, 0), (right, output_height - 1), (left, output_height - 1)],
+                inverse_matrix,
+            )
+        )
+
+    for top, bottom in y_overlaps:
+        overlap_polygons.append(
+            _project_work_area_polygon(
+                [(0, top), (output_width - 1, top), (output_width - 1, bottom), (0, bottom)],
+                inverse_matrix,
+            )
+        )
+
+    if overlap_polygons:
+        for polygon in overlap_polygons:
+            cv2.fillPoly(overlay, [polygon], overlap_color)
+        output_image = cv2.addWeighted(overlay, 0.2, output_image, 0.8, 0)
+        for polygon in overlap_polygons:
+            cv2.polylines(
+                output_image,
+                [polygon],
+                isClosed=True,
+                color=overlap_color,
+                thickness=2,
+            )
+
     return output_image
 
 

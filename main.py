@@ -42,7 +42,7 @@ from services.model_service import ModelUpdateError, update_model_files
 from services.perspective_warp_service import (
     create_aruco_detector,
     detect_aruco_marker_rectangle,
-    draw_aruco_marker_rectangle,
+    draw_sahi_overlap_boundaries,
 )
 from services.predict_service import PredictionError, predict_image
 from services.upload_service import (
@@ -941,7 +941,7 @@ class MainWindow(QMainWindow):
             return
 
         self.dataset_camera_screen.show_frame(
-            draw_aruco_marker_rectangle(frame, self.dataset_marker_rectangle)
+            draw_sahi_overlap_boundaries(frame, self.dataset_marker_rectangle)
         )
 
     def take_dataset_snapshot(self):
