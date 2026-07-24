@@ -1,5 +1,13 @@
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QHBoxLayout, QHeaderView, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
 from screens.common import create_button
 
@@ -7,6 +15,7 @@ from screens.common import create_button
 class ScanScreen(QWidget):
     back_requested = Signal()
     scan_requested = Signal()
+    show_image_requested = Signal()
 
     def __init__(self, buttons_config):
         super().__init__()
@@ -18,28 +27,36 @@ class ScanScreen(QWidget):
         nav = QHBoxLayout()
         self.scan_back_button = create_button(buttons_config, "scan_back_button")
         self.scan_action_button = create_button(buttons_config, "scan_action_button")
+        self.show_image_button = create_button(buttons_config, "show_image_button")
 
         self.scan_back_button.clicked.connect(self.back_requested.emit)
         self.scan_action_button.clicked.connect(self.scan_requested.emit)
+        self.show_image_button.clicked.connect(self.show_image_requested.emit)
 
         nav.addWidget(self.scan_back_button)
         nav.addWidget(self.scan_action_button)
+        nav.addWidget(self.show_image_button)
         nav.addStretch()
 
-        self.results_table = QTableWidget(0, 2)
-        self.results_table.setHorizontalHeaderLabels(["Деталь", "Артикул"])
+        title = QLabel("Результат сканирования")
+        title.setObjectName("title")
+
+        self.results_table = QTableWidget(0, 3)
+        self.results_table.setHorizontalHeaderLabels(["Деталь", "Количество", "Артикул"])
         self.results_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.results_table.verticalHeader().setVisible(False)
 
         layout.addLayout(nav)
+        layout.addWidget(title)
         layout.addWidget(self.results_table)
 
-    def show_scan_results(self, details):
-        self.results_table.setRowCount(len(details))
-        for row, (detail, article) in enumerate(details.items()):
-            detail_item = QTableWidgetItem(str(detail))
-            article_item = QTableWidgetItem(str(article))
-            detail_item.setFlags(detail_item.flags() & ~Qt.ItemIsEditable)
-            article_item.setFlags(article_item.flags() & ~Qt.ItemIsEditable)
-            self.results_table.setItem(row, 0, detail_item)
-            self.results_table.setItem(row, 1, article_item)
+    def show_scan_results(self, rows):
+        self.results_table.setRowCount(len(rows))
+        for row, result_row in enumerate(rows):
+            for column, value in enumerate(result_row):
+                item = QTableWidgetItem(str(value))
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.results_table.setItem(row, column, item)
+
+    def clear_scan_results(self):
+        self.results_table.setRowCount(0)

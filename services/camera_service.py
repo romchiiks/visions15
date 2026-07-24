@@ -6,10 +6,13 @@ import re
 
 import cv2
 
+from services.perspective_warp_service import apply_perspective_warp
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CAMERA_CONFIG_PATH = PROJECT_ROOT / "camera_config.json"
 CAPTURES_DIR = PROJECT_ROOT / "captures"
+SCANNED_DIR = CAPTURES_DIR / "scanned"
 DATASET_DIR = CAPTURES_DIR / "dataset"
 DATASET_METADATA_PATH = DATASET_DIR / "metadata.json"
 DATASET_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
@@ -26,6 +29,10 @@ DEFAULT_CAMERA_CONFIG = {
 
 def _dataset_date() -> str:
     return datetime.now().strftime("%d-%m-%Y")
+
+
+def _timestamp() -> str:
+    return datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")
 
 
 def _ensure_dir(target_dir: Path | str) -> Path:
@@ -253,6 +260,33 @@ def save_frame_image(frame, class_name: str) -> Path:
     _write_image(image_path, frame)
 
     return image_path
+
+
+def save_scanned_camera_image() -> Path:
+    camera, camera_settings = open_configured_camera()
+
+    try:
+        if not camera.isOpened():
+            device_index = camera_settings["device_index"]
+            raise RuntimeError(f"Не удалось открыть камеру с index device = {device_index}")
+
+        warmup_seconds = camera_settings["camera_warmup_seconds"]
+        started_at = monotonic()
+        frame = None
+
+        while frame is None or monotonic() - started_at < warmup_seconds:
+            success, frame = camera.read()
+            if not success:
+                raise RuntimeError("Не удалось получить кадр с камеры")
+            if monotonic() - started_at < warmup_seconds:
+                sleep(0.05)
+
+        transformed_frame = apply_perspective_warp(frame)
+        image_path = _ensure_dir(SCANNED_DIR) / f"{_timestamp()}.jpeg"
+        _write_image(image_path, transformed_frame)
+        return image_path
+    finally:
+        camera.release()
 
 
 def save_camera_image_stream(

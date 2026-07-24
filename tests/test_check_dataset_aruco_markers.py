@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 import numpy as np
 
@@ -81,3 +82,37 @@ def test_delete_invalid_images_deletes_all_problematic_files(tmp_path):
     assert deletion_errors == []
     assert not first_image.exists()
     assert not second_image.exists()
+
+
+def test_update_metadata_image_counts_after_deletion(tmp_path):
+    deleted_image = create_dataset_image(tmp_path, "class-a", "deleted.jpeg")
+    create_dataset_image(tmp_path, "class-a", "remaining.png")
+    create_dataset_image(tmp_path, "class-b", "remaining.jpg")
+    deleted_image.unlink()
+
+    metadata_path = tmp_path / "metadata.json"
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "classes": {
+                    "first": {
+                        "directory": "class-a",
+                        "images_count": 2,
+                    },
+                    "second": {
+                        "directory": "class-b",
+                        "images_count": 7,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    metadata = check_dataset_aruco_markers.read_metadata(tmp_path)
+
+    check_dataset_aruco_markers.update_metadata_image_counts(tmp_path, metadata)
+
+    updated_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert updated_metadata["classes"]["first"]["images_count"] == 1
+    assert updated_metadata["classes"]["second"]["images_count"] == 1

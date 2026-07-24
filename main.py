@@ -5,6 +5,7 @@ import shutil
 import sys
 import urllib.error
 import urllib.request
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from time import monotonic, sleep
@@ -17,7 +18,7 @@ from screens import (
     AddDetailScreen,
     DatasetCameraScreen,
     HomeScreen,
-    ScanCameraScreen,
+    ImageScreen,
     ScanScreen,
     SettingsCameraScreen,
     SettingsScreen,
@@ -33,16 +34,17 @@ from services.camera_service import (
     open_configured_camera,
     remove_empty_dataset_class_dir,
     save_frame_image,
+    save_scanned_camera_image,
     validate_class_name,
     write_dataset_metadata,
 )
 from services.model_service import ModelUpdateError, update_model_files
 from services.perspective_warp_service import (
-    apply_perspective_warp,
     create_aruco_detector,
     detect_aruco_marker_rectangle,
     draw_aruco_marker_rectangle,
 )
+from services.predict_service import PredictionError, predict_image
 from services.upload_service import (
     UploadArchiveError,
     UploadRequestError,
@@ -80,8 +82,7 @@ class MainWindow(QMainWindow):
         self.dataset_pending_frames = []
         self.dataset_saved_images_count = 0
         self.dataset_recording = False
-        self.scan_camera = None
-        self.scan_camera_settings = None
+        self.last_prediction_result = None
         self.settings_camera = None
         self.settings_camera_settings = None
         self.loading_dialog = LoadingDialog(self)
@@ -104,7 +105,7 @@ class MainWindow(QMainWindow):
 
         self.home_screen = HomeScreen(self.buttons_config)
         self.scan_screen = ScanScreen(self.buttons_config)
-        self.scan_camera_screen = ScanCameraScreen(self.buttons_config)
+        self.image_screen = ImageScreen(self.buttons_config)
         self.add_detail_screen = AddDetailScreen(self.buttons_config)
         self.upload_screen = UploadScreen(self.buttons_config)
         self.dataset_camera_screen = DatasetCameraScreen(self.buttons_config)
@@ -113,16 +114,12 @@ class MainWindow(QMainWindow):
 
         self.stack.addWidget(self.home_screen)
         self.stack.addWidget(self.scan_screen)
-        self.stack.addWidget(self.scan_camera_screen)
+        self.stack.addWidget(self.image_screen)
         self.stack.addWidget(self.add_detail_screen)
         self.stack.addWidget(self.upload_screen)
         self.stack.addWidget(self.dataset_camera_screen)
         self.stack.addWidget(self.settings_screen)
         self.stack.addWidget(self.settings_camera_screen)
-
-        self.scan_camera_timer = QTimer(self)
-        self.scan_camera_timer.setInterval(1000)
-        self.scan_camera_timer.timeout.connect(self.refresh_scan_camera_frame)
 
         self.connect_screen_signals()
 
@@ -159,9 +156,9 @@ class MainWindow(QMainWindow):
         self.home_screen.settings_requested.connect(self.open_settings_screen)
 
         self.scan_screen.back_requested.connect(self.open_home_screen)
-        self.scan_screen.scan_requested.connect(self.open_scan_camera_screen)
-
-        self.scan_camera_screen.back_requested.connect(self.return_to_scan_screen)
+        self.scan_screen.scan_requested.connect(self.scan_camera_image)
+        self.scan_screen.show_image_requested.connect(self.open_image_screen)
+        self.image_screen.back_requested.connect(self.return_to_scan_screen)
 
         self.add_detail_screen.back_requested.connect(self.open_home_screen)
         self.add_detail_screen.add_detail_requested.connect(self.add_detail_class)
@@ -186,45 +183,45 @@ class MainWindow(QMainWindow):
 
     def open_home_screen(self):
         self.stop_dataset_camera()
-        self.stop_scan_camera()
         self.stop_settings_camera()
         self.stack.setCurrentWidget(self.home_screen)
 
     def open_scan_screen(self):
         self.stop_dataset_camera()
-        self.stop_scan_camera()
         self.stop_settings_camera()
-        self.scan_screen.show_scan_results(self.read_details())
+        self.last_prediction_result = None
+        self.scan_screen.clear_scan_results()
+        self.image_screen.show_not_found()
         self.stack.setCurrentWidget(self.scan_screen)
-
-    def open_scan_camera_screen(self):
-        self.stop_dataset_camera()
-        self.stop_settings_camera()
-        self.scan_camera_screen.show_message("Камера запускается")
-        self.stack.setCurrentWidget(self.scan_camera_screen)
-        self.start_scan_camera()
 
     def return_to_scan_screen(self):
-        self.stop_scan_camera()
-        self.scan_screen.show_scan_results(self.read_details())
         self.stack.setCurrentWidget(self.scan_screen)
+
+    def open_image_screen(self):
+        if self.last_prediction_result is None:
+            QMessageBox.information(
+                self,
+                "Сканирование",
+                "Сначала выполните сканирование",
+            )
+            return
+
+        self.image_screen.show_prediction_result(self.last_prediction_result)
+        self.stack.setCurrentWidget(self.image_screen)
 
     def open_add_detail_screen(self):
         self.stop_dataset_camera()
-        self.stop_scan_camera()
         self.stop_settings_camera()
         self.load_details()
         self.stack.setCurrentWidget(self.add_detail_screen)
 
     def return_to_add_detail_screen(self):
         self.stop_dataset_camera()
-        self.stop_scan_camera()
         self.load_details()
         self.stack.setCurrentWidget(self.add_detail_screen)
 
     def open_upload_screen(self):
         self.stop_dataset_camera()
-        self.stop_scan_camera()
         self.stop_settings_camera()
         self.load_upload_classes()
         self.stack.setCurrentWidget(self.upload_screen)
@@ -296,7 +293,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Добавление детали", "Сначала добавьте класс детали")
             return
 
-        self.stop_scan_camera()
         self.stop_settings_camera()
         self.dataset_camera_screen.set_class_name(self.active_dataset_class_name)
         self.stack.setCurrentWidget(self.dataset_camera_screen)
@@ -304,7 +300,6 @@ class MainWindow(QMainWindow):
 
     def open_settings_screen(self):
         self.stop_dataset_camera()
-        self.stop_scan_camera()
         self.stop_settings_camera()
         self.load_server_settings()
         self.load_camera_settings()
@@ -312,7 +307,6 @@ class MainWindow(QMainWindow):
 
     def open_settings_camera_screen(self):
         self.stop_dataset_camera()
-        self.stop_scan_camera()
         self.settings_camera_screen.show_message("Камера запускается")
         self.stack.setCurrentWidget(self.settings_camera_screen)
         self.start_settings_camera()
@@ -759,6 +753,44 @@ class MainWindow(QMainWindow):
 
         return details
 
+    def scan_camera_image(self):
+        self.last_prediction_result = None
+        self.scan_screen.clear_scan_results()
+        self.image_screen.show_not_found()
+
+        try:
+            prediction_result = self.run_blocking_with_loading(
+                "Сканирование",
+                self.scan_and_predict_camera_image,
+            )
+        except (RuntimeError, ValueError, OSError, PredictionError) as error:
+            QMessageBox.warning(self, "Сканирование", str(error))
+            return
+
+        self.last_prediction_result = prediction_result
+        if not prediction_result.predictions:
+            QMessageBox.information(
+                self,
+                "Сканирование",
+                "Детали не обнаружены",
+            )
+            return
+
+        details = self.read_details()
+        category_counts = Counter(
+            prediction.category_name
+            for prediction in prediction_result.predictions
+        )
+        rows = [
+            (category_name, count, details.get(category_name, ""))
+            for category_name, count in sorted(category_counts.items())
+        ]
+        self.scan_screen.show_scan_results(rows)
+
+    def scan_and_predict_camera_image(self):
+        scanned_image_path = save_scanned_camera_image()
+        return predict_image(scanned_image_path)
+
     def write_details(self, details):
         with DETAILS_PATH.open("w", encoding="utf-8") as file:
             json.dump(details, file, ensure_ascii=False, indent=2)
@@ -1027,62 +1059,6 @@ class MainWindow(QMainWindow):
         self.load_details()
         self.stack.setCurrentWidget(self.add_detail_screen)
 
-    def start_scan_camera(self):
-        self.stop_scan_camera()
-        try:
-            self.scan_camera, self.scan_camera_settings = self.run_blocking_with_loading(
-                "Запуск камеры",
-                open_configured_camera,
-            )
-        except ValueError as error:
-            self.scan_camera = None
-            self.scan_camera_settings = None
-            self.scan_camera_screen.show_message("Камера не запущена")
-            QMessageBox.warning(self, "Камера", str(error))
-            return
-
-        fps = self.scan_camera_settings["fps"]
-        interval_ms = max(1, int(1000 / fps))
-        self.scan_camera_timer.setInterval(interval_ms)
-
-        if not self.scan_camera.isOpened():
-            device_index = self.scan_camera_settings["device_index"]
-            self.scan_camera.release()
-            self.scan_camera = None
-            self.scan_camera_settings = None
-            self.scan_camera_screen.show_message("Камера не найдена")
-            QMessageBox.warning(self, "Камера", f"Не удалось открыть камеру с index device = {device_index}")
-            return
-
-        self.refresh_scan_camera_frame()
-        self.scan_camera_timer.start()
-
-    def stop_scan_camera(self):
-        self.scan_camera_timer.stop()
-
-        if self.scan_camera is not None:
-            self.scan_camera.release()
-            self.scan_camera = None
-
-        self.scan_camera_settings = None
-
-    def refresh_scan_camera_frame(self):
-        if self.scan_camera is None:
-            return
-
-        success, frame = self.scan_camera.read()
-        if not success:
-            self.scan_camera_screen.show_message("Не удалось получить кадр")
-            return
-
-        try:
-            transformed_frame = apply_perspective_warp(frame)
-        except RuntimeError as error:
-            self.scan_camera_screen.show_message(str(error))
-            return
-
-        self.scan_camera_screen.show_frame(transformed_frame)
-
     def start_settings_camera(self):
         self.stop_settings_camera()
         try:
@@ -1135,7 +1111,6 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self.stop_dataset_camera()
-        self.stop_scan_camera()
         self.stop_settings_camera()
         self.loading_executor.shutdown(wait=False, cancel_futures=True)
         super().closeEvent(event)

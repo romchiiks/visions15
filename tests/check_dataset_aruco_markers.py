@@ -1,4 +1,5 @@
 import argparse
+import json
 from pathlib import Path
 import sys
 
@@ -18,6 +19,8 @@ from services.perspective_warp_service import (
 
 DEFAULT_DATASET_DIR = PROJECT_ROOT / "captures" / "dataset"
 DATASET_IMAGE_PATTERN = "*/images/*.jpeg"
+DATASET_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
+METADATA_FILE_NAME = "metadata.json"
 
 
 def find_dataset_images(dataset_dir: Path) -> list[Path]:
@@ -75,6 +78,48 @@ def delete_invalid_images(
     return deletion_errors
 
 
+def read_metadata(dataset_dir: Path) -> dict:
+    metadata_path = dataset_dir / METADATA_FILE_NAME
+    with metadata_path.open("r", encoding="utf-8") as metadata_file:
+        metadata = json.load(metadata_file)
+
+    if not isinstance(metadata, dict) or not isinstance(metadata.get("classes"), dict):
+        raise ValueError("metadata.json не содержит объект classes")
+
+    return metadata
+
+
+def update_metadata_image_counts(dataset_dir: Path, metadata: dict) -> Path:
+    for class_name, class_info in metadata["classes"].items():
+        if not isinstance(class_info, dict):
+            raise ValueError(f"Некорректные metadata для класса {class_name}")
+
+        directory = class_info.get("directory")
+        if not isinstance(directory, str) or not directory.strip():
+            raise ValueError(f"Не указан directory для класса {class_name}")
+
+        images_dir = dataset_dir / directory / "images"
+        class_info["images_count"] = sum(
+            1
+            for image_path in images_dir.iterdir()
+            if image_path.is_file()
+            and image_path.suffix.lower() in DATASET_IMAGE_EXTENSIONS
+        ) if images_dir.is_dir() else 0
+
+    metadata_path = dataset_dir / METADATA_FILE_NAME
+    temp_metadata_path = metadata_path.with_name(f".{metadata_path.name}.tmp")
+    try:
+        with temp_metadata_path.open("w", encoding="utf-8") as metadata_file:
+            json.dump(metadata, metadata_file, ensure_ascii=False, indent=2)
+            metadata_file.write("\n")
+        temp_metadata_path.replace(metadata_path)
+    except Exception:
+        temp_metadata_path.unlink(missing_ok=True)
+        raise
+
+    return metadata_path
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Проверка ArUco-маркеров в несжатых изображениях датасета.",
@@ -111,12 +156,25 @@ def main() -> int:
         print("Проблемные изображения не удалены.")
         return 1
 
+    try:
+        metadata = read_metadata(dataset_dir)
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        print(f"[ОШИБКА METADATA] Проблемные изображения не удалены: {error}")
+        return 1
+
     deletion_errors = delete_invalid_images(invalid_images)
     for image_path, reason in deletion_errors:
         print(f"[ОШИБКА УДАЛЕНИЯ] {image_path}: {reason}")
 
     deleted_count = len(invalid_images) - len(deletion_errors)
     print(f"Удалено проблемных изображений: {deleted_count}")
+
+    try:
+        metadata_path = update_metadata_image_counts(dataset_dir, metadata)
+        print(f"Обновлён metadata.json: {metadata_path}")
+    except (OSError, ValueError) as error:
+        print(f"[ОШИБКА METADATA] Не удалось обновить metadata.json: {error}")
+        return 1
 
     return 1 if deletion_errors else 0
 
