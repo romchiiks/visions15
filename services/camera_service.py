@@ -1,8 +1,11 @@
 import json
+import os
 from datetime import datetime
+from contextlib import contextmanager
 from pathlib import Path
 from time import monotonic, sleep
 import re
+import sys
 
 import cv2
 
@@ -25,6 +28,33 @@ DEFAULT_CAMERA_CONFIG = {
     "capture_interval": 1,
     "camera_warmup_seconds": 2.0,
 }
+
+
+@contextmanager
+def _suppress_native_stderr():
+    try:
+        stderr_fd = sys.stderr.fileno()
+    except (AttributeError, OSError, ValueError):
+        yield
+        return
+
+    saved_stderr_fd = None
+    devnull_fd = None
+    try:
+        saved_stderr_fd = os.dup(stderr_fd)
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull_fd, stderr_fd)
+        yield
+    finally:
+        if saved_stderr_fd is not None:
+            os.dup2(saved_stderr_fd, stderr_fd)
+            os.close(saved_stderr_fd)
+        if devnull_fd is not None:
+            os.close(devnull_fd)
+
+
+def _timestamp() -> str:
+    return datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")
 
 
 def _dataset_date() -> str:
@@ -140,9 +170,16 @@ def open_configured_camera(
     fps: int | None = None,
 ):
     settings = get_camera_settings(device_index=device_index, fps=fps)
-    camera = cv2.VideoCapture(settings["device_index"])
-    apply_camera_settings(camera, settings)
+    with _suppress_native_stderr():
+        camera = cv2.VideoCapture(settings["device_index"])
+        if camera.isOpened():
+            apply_camera_settings(camera, settings)
     return camera, settings
+
+
+def release_camera(camera) -> None:
+    with _suppress_native_stderr():
+        camera.release()
 
 
 def validate_class_name(class_name: str) -> str:
@@ -286,7 +323,7 @@ def save_scanned_camera_image() -> Path:
         _write_image(image_path, transformed_frame)
         return image_path
     finally:
-        camera.release()
+        release_camera(camera)
 
 
 def save_camera_image_stream(
@@ -323,6 +360,6 @@ def save_camera_image_stream(
             elapsed = monotonic() - loop_started_at
             sleep(max(0, interval_seconds - elapsed))
     finally:
-        camera.release()
+        release_camera(camera)
 
     return saved_paths

@@ -92,12 +92,10 @@ class ImageScreen(QWidget):
             return
 
         self.image_label.setText("")
-        self.image_label.setPixmap(
-            self.annotated_pixmap.scaled(
-                self.image_label.size(),
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation,
-            )
+        scaled_pixmap = pixmap.scaled(
+            self.image_label.size(),
+            Qt.KeepAspectRatio,
+            Qt.FastTransformation,
         )
 
     def resizeEvent(self, event):
