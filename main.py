@@ -1,9 +1,11 @@
 import json
 import random
 import re
+import shutil
 import sys
 import urllib.error
 import urllib.request
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event, Lock, Thread
@@ -34,15 +36,17 @@ from services.camera_service import (
     open_configured_camera,
     release_camera,
     remove_empty_dataset_class_dir,
-    save_camera_image,
     save_frame_image,
+    save_scanned_camera_image,
     validate_class_name,
     write_dataset_metadata,
 )
 from services.model_service import ModelUpdateError, update_model_files
 from services.perspective_warp_service import (
+    create_aruco_detector,
     detect_aruco_marker_rectangle,
 )
+from services.predict_service import PredictionError, predict_image
 from services.upload_service import (
     UploadArchiveError,
     UploadRequestError,
@@ -70,7 +74,6 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("IR AI")
         self.setMinimumSize(720, 480)
         self.buttons_config = load_buttons_config()
-        self.last_scanned_image_path = None
         self.active_dataset_class_name = None
         self.active_dataset_article = None
         self.active_dataset_is_new_class = False
@@ -86,6 +89,7 @@ class MainWindow(QMainWindow):
         self.dataset_pending_frames = []
         self.dataset_saved_images_count = 0
         self.dataset_recording = False
+        self.last_prediction_result = None
         self.settings_camera = None
         self.settings_camera_settings = None
         self.settings_current_frame = None
@@ -166,7 +170,6 @@ class MainWindow(QMainWindow):
         self.scan_screen.back_requested.connect(self.open_home_screen)
         self.scan_screen.scan_requested.connect(self.scan_camera_image)
         self.scan_screen.show_image_requested.connect(self.open_image_screen)
-
         self.image_screen.back_requested.connect(self.return_to_scan_screen)
 
         self.add_detail_screen.back_requested.connect(self.open_home_screen)
@@ -198,11 +201,25 @@ class MainWindow(QMainWindow):
     def open_scan_screen(self):
         self.stop_dataset_camera()
         self.stop_settings_camera()
-        self.scan_screen.clear_scan_result()
+        self.last_prediction_result = None
+        self.scan_screen.clear_scan_results()
+        self.image_screen.show_not_found()
         self.stack.setCurrentWidget(self.scan_screen)
 
     def return_to_scan_screen(self):
         self.stack.setCurrentWidget(self.scan_screen)
+
+    def open_image_screen(self):
+        if self.last_prediction_result is None:
+            QMessageBox.information(
+                self,
+                "Сканирование",
+                "Сначала выполните сканирование",
+            )
+            return
+
+        self.image_screen.show_prediction_result(self.last_prediction_result)
+        self.stack.setCurrentWidget(self.image_screen)
 
     def open_add_detail_screen(self):
         self.stop_dataset_camera()
@@ -261,11 +278,12 @@ class MainWindow(QMainWindow):
 
         self.load_upload_classes()
 
-        archive_message_title = "Создан архив" if len(archive_paths) == 1 else "Созданы архивы"
+        archive_message_title = "Выгружен архив" if len(archive_paths) == 1 else "Выгружены архивы"
         message = (
             f"{archive_message_title}:\n"
             + "\n".join(str(path) for path in archive_paths)
-            + f"\n\nПроект отправлен. Код ответа: {response_status_code}"
+            + "\n\nЛокальные файлы выгруженных классов удалены."
+            + f"\nПроект отправлен. Код ответа: {response_status_code}"
         )
 
         QMessageBox.information(self, "Выгрузка", message)
@@ -287,6 +305,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Добавление детали", "Сначала добавьте класс детали")
             return
 
+        self.stop_settings_camera()
         self.dataset_camera_screen.set_class_name(self.active_dataset_class_name)
         self.stack.setCurrentWidget(self.dataset_camera_screen)
         self.start_dataset_camera()
@@ -615,18 +634,11 @@ class MainWindow(QMainWindow):
         current_class_dir.rename(new_class_dir)
 
     def rename_dataset_metadata_class(self, current_class_name, new_class_name):
-        if not DATASET_METADATA_PATH.exists() or DATASET_METADATA_PATH.stat().st_size == 0:
+        metadata_data = self.read_dataset_metadata_for_update()
+        if metadata_data is None:
             return
 
-        with DATASET_METADATA_PATH.open("r", encoding="utf-8") as metadata_file:
-            metadata = json.load(metadata_file)
-
-        if not isinstance(metadata, dict):
-            raise ValueError("metadata.json должен содержать JSON-объект")
-
-        classes = metadata.get("classes", {})
-        if not isinstance(classes, dict):
-            raise ValueError("metadata.json: classes должен быть объектом")
+        metadata, classes = metadata_data
         if current_class_name not in classes:
             return
 
@@ -644,9 +656,66 @@ class MainWindow(QMainWindow):
             renamed_classes[new_class_name] = class_data
 
         metadata["classes"] = renamed_classes
+        self.write_dataset_metadata_file(metadata)
+
+    def read_dataset_metadata_for_update(self):
+        if not DATASET_METADATA_PATH.exists() or DATASET_METADATA_PATH.stat().st_size == 0:
+            return None
+
+        with DATASET_METADATA_PATH.open("r", encoding="utf-8") as metadata_file:
+            metadata = json.load(metadata_file)
+
+        if not isinstance(metadata, dict):
+            raise ValueError("metadata.json должен содержать JSON-объект")
+
+        classes = metadata.get("classes", {})
+        if not isinstance(classes, dict):
+            raise ValueError("metadata.json: classes должен быть объектом")
+
+        return metadata, classes
+
+    def write_dataset_metadata_file(self, metadata):
         with DATASET_METADATA_PATH.open("w", encoding="utf-8") as metadata_file:
             json.dump(metadata, metadata_file, ensure_ascii=False, indent=2)
             metadata_file.write("\n")
+
+    def dataset_class_dir_from_name(self, class_name):
+        class_name = validate_class_name(str(class_name))
+        dataset_dir = DATASET_DIR.resolve()
+        class_dir = (DATASET_DIR / class_name).resolve()
+        if class_dir.parent != dataset_dir:
+            raise ValueError(f"Некорректная папка класса: {class_name}")
+
+        return class_dir
+
+    def delete_dataset_class_data(self, class_name):
+        metadata_data = self.read_dataset_metadata_for_update()
+        metadata = None
+        classes = {}
+        class_dirs = [self.dataset_class_dir_from_name(class_name)]
+
+        if metadata_data is not None:
+            metadata, classes = metadata_data
+            class_data = classes.get(class_name)
+            if isinstance(class_data, dict):
+                directory_name = class_data.get("directory")
+                if directory_name:
+                    class_dirs.append(self.dataset_class_dir_from_name(directory_name))
+
+        seen_class_dirs = set()
+        for class_dir in class_dirs:
+            if class_dir in seen_class_dirs:
+                continue
+            seen_class_dirs.add(class_dir)
+            if class_dir.exists():
+                shutil.rmtree(class_dir)
+
+        if metadata is None or class_name not in classes:
+            return
+
+        del classes[class_name]
+        metadata["classes"] = classes
+        self.write_dataset_metadata_file(metadata)
 
     def delete_detail_class(self, class_name):
         details = self.read_details()
@@ -666,28 +735,17 @@ class MainWindow(QMainWindow):
         if message_box.clickedButton() != yes_button:
             return
 
+        try:
+            self.delete_dataset_class_data(class_name)
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            QMessageBox.warning(self, "Удаление детали", str(error))
+            return
+
         del details[class_name]
         self.write_details(details)
         if self.active_dataset_class_name == class_name:
             self.active_dataset_class_name = None
         self.load_details()
-
-    def scan_camera_image(self):
-        try:
-            self.last_scanned_image_path = self.run_blocking_with_loading(
-                "Сканирование",
-                lambda: save_camera_image(is_scanned=True),
-            )
-        except (RuntimeError, ValueError) as error:
-            self.last_scanned_image_path = None
-            QMessageBox.warning(self, "Сканирование", str(error))
-            return
-
-        self.scan_screen.show_scan_result()
-
-    def open_image_screen(self):
-        self.stack.setCurrentWidget(self.image_screen)
-        self.image_screen.show_image(self.last_scanned_image_path)
 
     def load_details(self):
         self.add_detail_screen.show_details(self.read_details())
@@ -706,6 +764,44 @@ class MainWindow(QMainWindow):
             return {}
 
         return details
+
+    def scan_camera_image(self):
+        self.last_prediction_result = None
+        self.scan_screen.clear_scan_results()
+        self.image_screen.show_not_found()
+
+        try:
+            prediction_result = self.run_blocking_with_loading(
+                "Сканирование",
+                self.scan_and_predict_camera_image,
+            )
+        except (RuntimeError, ValueError, OSError, PredictionError) as error:
+            QMessageBox.warning(self, "Сканирование", str(error))
+            return
+
+        self.last_prediction_result = prediction_result
+        if not prediction_result.predictions:
+            QMessageBox.information(
+                self,
+                "Сканирование",
+                "Детали не обнаружены",
+            )
+            return
+
+        details = self.read_details()
+        category_counts = Counter(
+            prediction.category_name
+            for prediction in prediction_result.predictions
+        )
+        rows = [
+            (category_name, count, details.get(category_name, ""))
+            for category_name, count in sorted(category_counts.items())
+        ]
+        self.scan_screen.show_scan_results(rows)
+
+    def scan_and_predict_camera_image(self):
+        scanned_image_path = save_scanned_camera_image()
+        return predict_image(scanned_image_path)
 
     def write_details(self, details):
         with DETAILS_PATH.open("w", encoding="utf-8") as file:
@@ -954,6 +1050,18 @@ class MainWindow(QMainWindow):
         self.dataset_pending_frames.append(self.dataset_storage_frame(frame))
         self.update_dataset_images_count()
 
+    def dataset_frame_has_required_markers(self, frame):
+        try:
+            detect_aruco_marker_rectangle(
+                frame,
+                detector=self.dataset_aruco_detector,
+            )
+        except RuntimeError as error:
+            self.dataset_camera_screen.show_message(f"Кадр пропущен: {error}")
+            return False
+
+        return True
+
     def save_dataset_images(self):
         if self.active_dataset_class_name is None:
             return
@@ -975,7 +1083,6 @@ class MainWindow(QMainWindow):
                 save_frame_image(
                     frame,
                     class_name=class_name,
-                    is_scanned=False,
                 )
             details = self.read_details()
             if class_name not in details:

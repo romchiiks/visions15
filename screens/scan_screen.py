@@ -1,5 +1,13 @@
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QHBoxLayout, QHeaderView, QLabel, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
 from screens.common import create_button
 
@@ -34,7 +42,7 @@ class ScanScreen(QWidget):
         title.setObjectName("title")
 
         self.results_table = QTableWidget(0, 3)
-        self.results_table.setHorizontalHeaderLabels(["Наименование", "Количество", "Артикул"])
+        self.results_table.setHorizontalHeaderLabels(["Деталь", "Количество", "Артикул"])
         self.results_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.results_table.verticalHeader().setVisible(False)
 
@@ -42,12 +50,13 @@ class ScanScreen(QWidget):
         layout.addWidget(title)
         layout.addWidget(self.results_table)
 
-    def show_scan_result(self):
-        self.results_table.setRowCount(1)
-        for column in range(3):
-            item = QTableWidgetItem("null")
-            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-            self.results_table.setItem(0, column, item)
+    def show_scan_results(self, rows):
+        self.results_table.setRowCount(len(rows))
+        for row, result_row in enumerate(rows):
+            for column, value in enumerate(result_row):
+                item = QTableWidgetItem(str(value))
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.results_table.setItem(row, column, item)
 
-    def clear_scan_result(self):
+    def clear_scan_results(self):
         self.results_table.setRowCount(0)

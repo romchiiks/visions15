@@ -1,0 +1,118 @@
+from pathlib import Path
+import json
+
+import numpy as np
+
+from tests import check_dataset_aruco_markers
+
+
+def create_dataset_image(dataset_dir: Path, class_name: str, file_name: str) -> Path:
+    images_dir = dataset_dir / class_name / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+    image_path = images_dir / file_name
+    image_path.write_bytes(b"image")
+    return image_path
+
+
+def test_find_dataset_images_returns_only_jpeg_files_in_class_images(tmp_path):
+    first_image = create_dataset_image(tmp_path, "class-a", "first.jpeg")
+    second_image = create_dataset_image(tmp_path, "class-b", "second.jpeg")
+    create_dataset_image(tmp_path, "class-a", "ignored.jpg")
+    (tmp_path / "root.jpeg").write_bytes(b"image")
+
+    assert check_dataset_aruco_markers.find_dataset_images(tmp_path) == [
+        first_image,
+        second_image,
+    ]
+
+
+def test_find_invalid_images_reports_missing_markers(tmp_path, monkeypatch):
+    valid_image = create_dataset_image(tmp_path, "class-a", "valid.jpeg")
+    invalid_image = create_dataset_image(tmp_path, "class-a", "invalid.jpeg")
+    images = {
+        valid_image: np.zeros((1, 1, 3), dtype=np.uint8),
+        invalid_image: np.ones((1, 1, 3), dtype=np.uint8),
+    }
+
+    monkeypatch.setattr(
+        check_dataset_aruco_markers,
+        "read_image",
+        images.__getitem__,
+    )
+
+    def detect_markers(image, detector):
+        if image[0, 0, 0] == 1:
+            raise RuntimeError("Не найдены обязательные Aruco-маркеры: [3]")
+
+    monkeypatch.setattr(
+        check_dataset_aruco_markers,
+        "detect_aruco_marker_rectangle",
+        detect_markers,
+    )
+
+    assert check_dataset_aruco_markers.find_invalid_images(
+        tmp_path,
+        detector=object(),
+    ) == [
+        (
+            invalid_image,
+            "Не найдены обязательные Aruco-маркеры: [3]",
+        )
+    ]
+
+
+def test_confirm_deletion_repeats_until_y_or_n(monkeypatch):
+    answers = iter(["unexpected", "Y"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
+
+    assert check_dataset_aruco_markers.confirm_deletion() is True
+
+
+def test_delete_invalid_images_deletes_all_problematic_files(tmp_path):
+    first_image = create_dataset_image(tmp_path, "class-a", "first.jpeg")
+    second_image = create_dataset_image(tmp_path, "class-b", "second.jpeg")
+
+    deletion_errors = check_dataset_aruco_markers.delete_invalid_images(
+        [
+            (first_image, "missing markers"),
+            (second_image, "missing markers"),
+        ]
+    )
+
+    assert deletion_errors == []
+    assert not first_image.exists()
+    assert not second_image.exists()
+
+
+def test_update_metadata_image_counts_after_deletion(tmp_path):
+    deleted_image = create_dataset_image(tmp_path, "class-a", "deleted.jpeg")
+    create_dataset_image(tmp_path, "class-a", "remaining.png")
+    create_dataset_image(tmp_path, "class-b", "remaining.jpg")
+    deleted_image.unlink()
+
+    metadata_path = tmp_path / "metadata.json"
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "classes": {
+                    "first": {
+                        "directory": "class-a",
+                        "images_count": 2,
+                    },
+                    "second": {
+                        "directory": "class-b",
+                        "images_count": 7,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    metadata = check_dataset_aruco_markers.read_metadata(tmp_path)
+
+    check_dataset_aruco_markers.update_metadata_image_counts(tmp_path, metadata)
+
+    updated_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert updated_metadata["classes"]["first"]["images_count"] == 1
+    assert updated_metadata["classes"]["second"]["images_count"] == 1
